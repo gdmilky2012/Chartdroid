@@ -1,6 +1,7 @@
 package com.example.chartdroid
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -18,13 +19,15 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import android.widget.PopupMenu
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -41,8 +44,6 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private var song = Song()
 
     private var chartUri: Uri? = null
-    private var audioUri: Uri? = null
-    private var audioName: String = ""
     private var dirty = false
 
     private var diffIdx = 3
@@ -52,32 +53,67 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private val redoStack = ArrayList<String>()
     private var clip: List<NoteObj> = emptyList()
 
-    // ----- audio / pemutaran -----
-    private var player: MediaPlayer? = null
+    // ----- audio -----
+    private class Stem(val uri: Uri, val name: String, val player: MediaPlayer)
+
+    private val stems = ArrayList<Stem>()
     private var playing = false
     private var audioStarted = false
     private var speed = 1.0f
     private var startChartSec = 0.0
     private var wallStart = 0L
+    private var lastTick = 0.0
+    private var wave: Waveform? = null
+    private var waveJob = 0
+    private var metronomeHi: Clicker? = null
+    private var metronomeLo: Clicker? = null
+    private var clap: Clicker? = null
+
+    // ----- pengaturan -----
+    private var setMetronome = false
+    private var setClap = false
+    private var setWave = false
+    private var set3D = true
+    private var setExt = true
+    private var setChord = true
+    private var setDrum5 = false
+    private var setVolume = 100
+    private var setClickVol = 70
+    private var setCalib = 0
+    private var panelVisible = true
 
     // ----- tampilan -----
-    private val toolButtons = ArrayList<TextView>()
-    private val diffButtons = ArrayList<TextView>()
-    private lateinit var instButton: TextView
+    private val toolButtons = HashMap<Int, TextView>()
+    private lateinit var diffChip: TextView
+    private lateinit var instChip: TextView
     private lateinit var snapText: TextView
-    private lateinit var openBtn: TextView
     private lateinit var infoText: TextView
+    private lateinit var selText: TextView
     private lateinit var timeText: TextView
     private lateinit var titleText: TextView
     private lateinit var playBtn: TextView
     private lateinit var speedBtn: TextView
+    private lateinit var metBtn: TextView
+    private lateinit var clapBtn: TextView
+    private lateinit var rightPanel: View
+    private lateinit var guitarPlace: LinearLayout
+    private lateinit var drumPlace: LinearLayout
+    private lateinit var guitarSel: LinearLayout
+    private lateinit var drumSel: LinearLayout
+    private lateinit var fillBtn: TextView
+    private lateinit var rollBtn: TextView
+    private lateinit var barBtn: TextView
+    private lateinit var kickBtn: TextView
+    private lateinit var cymBtn: TextView
+    private lateinit var placeTypeBtns: List<TextView>
+    private lateinit var placeDynBtns: List<TextView>
 
     private val snaps = intArrayOf(1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 192)
     private var snapIdx = 5
 
-    private val cBar = 0xFF262936.toInt()
-    private val cPanel = 0xFF1E202B.toInt()
-    private val cBtn = 0xFF343848.toInt()
+    private val cBar = 0xFF2B2D3A.toInt()
+    private val cPanel = 0xFF1C1E29.toInt()
+    private val cBtn = 0xFF3A3E50.toInt()
     private val cSel = 0xFF3B82F6.toInt()
 
     private var pending = 0
@@ -86,6 +122,8 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private val RQ_OPEN_AUDIO = 3
     private val RQ_SAVE_AS = 4
     private val RQ_EXPORT = 5
+    private val RQ_ADD_STEM = 6
+    private val RQ_EXPORT_MID = 7
 
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val rq = pending
@@ -102,12 +140,25 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             when (rq) {
                 RQ_OPEN_CHART -> loadChartFromUri(uri)
                 RQ_OPEN_FOLDER -> loadFolder(uri)
-                RQ_OPEN_AUDIO -> loadAudio(uri, displayName(uri))
+                RQ_OPEN_AUDIO -> {
+                    releaseStems()
+                    addStem(uri, displayName(uri))
+                    afterAudioChange()
+                }
+                RQ_ADD_STEM -> {
+                    addStem(uri, displayName(uri))
+                    afterAudioChange()
+                }
                 RQ_SAVE_AS -> {
                     chartUri = uri
                     saveChart()
                 }
                 RQ_EXPORT -> exportFolder(uri)
+                RQ_EXPORT_MID -> {
+                    val os = contentResolver.openOutputStream(uri, "wt") ?: throw IllegalStateException("tidak bisa menulis")
+                    os.use { it.write(MidiIO.write(song)) }
+                    toast("File .mid diekspor")
+                }
             }
         } catch (e: Exception) {
             toast("Gagal: ${e.message}")
@@ -124,6 +175,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         } catch (e: Exception) {
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        loadPrefs()
 
         highway = HighwayView(this)
         highway.listener = this
@@ -132,27 +184,32 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             false
         }
 
+        metronomeHi = Clicker(1800.0, 50, false)
+        metronomeLo = Clicker(1100.0, 50, false)
+        clap = Clicker(0.0, 80, true)
+
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.setBackgroundColor(0xFF161821.toInt())
-        root.addView(buildMenuBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+        root.setBackgroundColor(0xFF15161D.toInt())
+        root.addView(buildTopBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)))
 
         val mid = LinearLayout(this)
         mid.orientation = LinearLayout.HORIZONTAL
-        mid.addView(buildToolColumn(), LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.MATCH_PARENT))
+        mid.addView(buildToolColumn(), LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.MATCH_PARENT))
         mid.addView(highway, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        mid.addView(buildRightPanel(), LinearLayout.LayoutParams(dp(190), ViewGroup.LayoutParams.MATCH_PARENT))
+        rightPanel = buildRightPanel()
+        mid.addView(rightPanel, LinearLayout.LayoutParams(dp(176), ViewGroup.LayoutParams.MATCH_PARENT))
         root.addView(mid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-
-        root.addView(buildPlayBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)))
+        root.addView(buildPlayBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
         setContentView(root)
 
+        applySettingsToView()
         selectTool(HighwayView.T_NOTE)
         applySong(Song(), keepAudio = false)
         updateSnapText()
         updateInfo()
         goImmersive()
-        toast("Tips: menu Bantuan > Panduan menjelaskan tiap alat")
+        toast("Bantuan > Panduan menjelaskan semua alat")
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -165,6 +222,116 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         val c = WindowInsetsControllerCompat(window, window.decorView)
         c.hide(WindowInsetsCompat.Type.systemBars())
         c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    // ===================== pengaturan =====================
+    private fun prefs() = getSharedPreferences("chartdroid", Context.MODE_PRIVATE)
+
+    private fun loadPrefs() {
+        val p = prefs()
+        setMetronome = p.getBoolean("metronome", false)
+        setClap = p.getBoolean("clap", false)
+        setWave = p.getBoolean("wave", false)
+        set3D = p.getBoolean("view3d", true)
+        setExt = p.getBoolean("ext", true)
+        setChord = p.getBoolean("chord", true)
+        setDrum5 = p.getBoolean("drum5", false)
+        setVolume = p.getInt("vol", 100)
+        setClickVol = p.getInt("clickvol", 70)
+        setCalib = p.getInt("calib", 0)
+        panelVisible = p.getBoolean("panel", true)
+    }
+
+    private fun savePrefs() {
+        prefs().edit()
+            .putBoolean("metronome", setMetronome).putBoolean("clap", setClap).putBoolean("wave", setWave)
+            .putBoolean("view3d", set3D).putBoolean("ext", setExt).putBoolean("chord", setChord)
+            .putBoolean("drum5", setDrum5).putInt("vol", setVolume).putInt("clickvol", setClickVol)
+            .putInt("calib", setCalib).putBoolean("panel", panelVisible).apply()
+    }
+
+    private fun applySettingsToView() {
+        highway.view3D = set3D
+        highway.extSustain = setExt
+        highway.chordSelect = setChord
+        highway.drum5Pref = setDrum5
+        highway.showWave = setWave
+        val cv = setClickVol / 100f
+        metronomeHi?.setVolume(cv)
+        metronomeLo?.setVolume(cv)
+        clap?.setVolume(cv)
+        for (s in stems) try {
+            s.player.setVolume(setVolume / 100f, setVolume / 100f)
+        } catch (e: Exception) {
+        }
+        if (::rightPanel.isInitialized) rightPanel.visibility = if (panelVisible) View.VISIBLE else View.GONE
+        if (::metBtn.isInitialized) {
+            metBtn.background = bg(if (setMetronome) cSel else cBtn)
+            clapBtn.background = bg(if (setClap) cSel else cBtn)
+        }
+        if (setWave && wave == null) loadWaveform()
+        savePrefs()
+    }
+
+    private fun showSettings() {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(8), dp(20), dp(4))
+        fun check(t: String, v: Boolean, f: (Boolean) -> Unit): CheckBox {
+            val c = CheckBox(this)
+            c.text = t
+            c.isChecked = v
+            c.setOnCheckedChangeListener { _, b ->
+                f(b)
+                applySettingsToView()
+            }
+            col.addView(c)
+            return c
+        }
+        check("Tampilan 3D (perspektif)", set3D) { set3D = it }
+        check("Tampilkan waveform", setWave) { setWave = it }
+        check("Metronome saat memutar", setMetronome) { setMetronome = it }
+        check("Clap (bunyi tiap not) saat memutar", setClap) { setClap = it }
+        check("Extended sustains (tiap not dalam chord punya panjang sendiri)", setExt) { setExt = it }
+        check("Pilih seluruh chord saat mengetuk not (Chord select)", setChord) { setChord = it }
+        check("Drum 5 lane (jika kosong, otomatis dari isi chart)", setDrum5) { setDrum5 = it }
+        fun slider(t: String, v: Int, f: (Int) -> Unit) {
+            val tv = TextView(this)
+            tv.text = "$t: $v%"
+            tv.textSize = 12f
+            col.addView(tv)
+            val sb = SeekBar(this)
+            sb.max = 100
+            sb.progress = v
+            sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar?, p: Int, u: Boolean) {
+                    f(p)
+                    tv.text = "$t: $p%"
+                    applySettingsToView()
+                }
+
+                override fun onStartTrackingTouch(s: SeekBar?) {}
+                override fun onStopTrackingTouch(s: SeekBar?) {}
+            })
+            col.addView(sb)
+        }
+        slider("Volume musik", setVolume) { setVolume = it }
+        slider("Volume metronome/clap", setClickVol) { setClickVol = it }
+        val ct = TextView(this)
+        ct.text = "Kalibrasi audio (ms) — geser tampilan terhadap suara"
+        ct.textSize = 12f
+        col.addView(ct)
+        val ce = EditText(this)
+        ce.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
+        ce.setText(setCalib.toString())
+        col.addView(ce)
+        val sv = ScrollView(this)
+        sv.addView(col)
+        AlertDialog.Builder(this).setTitle("Pengaturan").setView(sv)
+            .setPositiveButton("Tutup") { _, _ ->
+                setCalib = ce.text.toString().toIntOrNull() ?: 0
+                savePrefs()
+            }.show()
     }
 
     // ===================== pembuat UI =====================
@@ -182,7 +349,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         t.setTextColor(Color.WHITE)
         t.gravity = Gravity.CENTER
         t.background = bg(cBtn)
-        t.setPadding(dp(8), dp(4), dp(8), dp(4))
+        t.setPadding(dp(6), dp(3), dp(6), dp(3))
         t.isClickable = true
         t.setOnClickListener { onClick(it) }
         return t
@@ -191,9 +358,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private fun label(text: String): TextView {
         val t = TextView(this)
         t.text = text
-        t.textSize = 11f
-        t.setTextColor(0xFF9CA3AF.toInt())
-        t.setPadding(0, dp(8), 0, dp(2))
+        t.textSize = 10f
+        t.setTextColor(0xFF8B93A7.toInt())
+        t.setPadding(0, dp(7), 0, dp(2))
         return t
     }
 
@@ -203,31 +370,41 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         return l
     }
 
-    private fun buildMenuBar(): View {
+    private fun buildTopBar(): View {
         val bar = LinearLayout(this)
         bar.orientation = LinearLayout.HORIZONTAL
         bar.setBackgroundColor(cBar)
         bar.gravity = Gravity.CENTER_VERTICAL
-        val names = listOf("File", "Edit", "View", "Song", "Bantuan")
-        for (n in names) {
+        val hs = HorizontalScrollView(this)
+        hs.isHorizontalScrollBarEnabled = false
+        val menus = LinearLayout(this)
+        menus.orientation = LinearLayout.HORIZONTAL
+        for (n in listOf("File", "Edit", "View", "Song", "Tools", "Options", "Help")) {
             val t = TextView(this)
             t.text = n
             t.textSize = 13f
             t.setTextColor(Color.WHITE)
             t.gravity = Gravity.CENTER
-            t.setPadding(dp(14), 0, dp(14), 0)
+            t.setPadding(dp(11), 0, dp(11), 0)
             t.setOnClickListener { showMenu(it, n) }
-            bar.addView(t, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            menus.addView(t, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        hs.addView(menus)
+        bar.addView(hs, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         titleText = TextView(this)
-        titleText.textSize = 12f
-        titleText.setTextColor(0xFFD1D5DB.toInt())
+        titleText.textSize = 11f
+        titleText.setTextColor(0xFFA7ADBF.toInt())
         titleText.gravity = Gravity.CENTER
         titleText.maxLines = 1
-        bar.addView(titleText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        bar.addView(btn("↶ Undo", 12f) { undo() }, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 4))
-        bar.addView(btn("↷ Redo", 12f) { redo() }, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 4))
-        bar.addView(btn("💾 Simpan", 12f) { saveChart() }, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 4))
+        titleText.ellipsize = android.text.TextUtils.TruncateAt.END
+        bar.addView(titleText, LinearLayout.LayoutParams(dp(140), ViewGroup.LayoutParams.MATCH_PARENT))
+        diffChip = btn("Expert ▾", 12f) { showDiffMenu(it) }
+        instChip = btn("Guitar ▾", 12f) { showInstMenu(it) }
+        bar.addView(diffChip, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(instChip, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(btn("↶", 15f) { undo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(btn("↷", 15f) { redo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(btn("💾", 14f) { saveChart() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
         return bar
     }
 
@@ -236,25 +413,52 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         sv.setBackgroundColor(cPanel)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.setPadding(dp(4), dp(4), dp(4), dp(4))
+        col.setPadding(dp(3), dp(3), dp(3), dp(3))
         val defs = listOf(
-            HighwayView.T_PAN to "Geser\nPan",
-            HighwayView.T_SELECT to "Pilih\nCursor",
-            HighwayView.T_ERASE to "Hapus\nEraser",
-            HighwayView.T_NOTE to "Not\nNote",
-            HighwayView.T_STAR to "Star\nPower",
-            HighwayView.T_BPM to "BPM",
-            HighwayView.T_TS to "Birama\nTime Sig",
-            HighwayView.T_SECTION to "Bagian\nSection",
-            HighwayView.T_EVENT to "Event\nSolo"
+            Triple(HighwayView.T_PAN, "✋", "Geser (Pan)"),
+            Triple(HighwayView.T_SELECT, "↖", "Pilih (Cursor)"),
+            Triple(HighwayView.T_ERASE, "⌫", "Hapus (Eraser)"),
+            Triple(HighwayView.T_NOTE, "●", "Not (Note)"),
+            Triple(HighwayView.T_STAR, "★", "Star Power / Fill"),
+            Triple(HighwayView.T_ROLL, "≋", "Drum Roll"),
+            Triple(HighwayView.T_BPM, "♩", "BPM"),
+            Triple(HighwayView.T_TS, "4/4", "Time Signature"),
+            Triple(HighwayView.T_SECTION, "§", "Section / Lirik"),
+            Triple(HighwayView.T_EVENT, "⚑", "Event (solo)")
         )
-        for ((tool, text) in defs) {
-            val b = btn(text, 11f) { selectTool(tool) }
-            toolButtons.add(b)
-            col.addView(b, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(52), 0f, 2))
+        var row: LinearLayout? = null
+        for ((i, def) in defs.withIndex()) {
+            if (i % 2 == 0) {
+                row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                col.addView(row)
+            }
+            val b = btn(def.second, if (def.second.length > 1) 12f else 18f) { selectTool(def.first) }
+            b.setOnLongClickListener {
+                toast(def.third)
+                true
+            }
+            toolButtons[def.first] = b
+            row!!.addView(b, lp(dp(40), dp(40), 0f, 2))
         }
         sv.addView(col)
         return sv
+    }
+
+    private fun seg(labels: List<String>, onClick: (Int) -> Unit): Pair<LinearLayout, List<TextView>> {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val list = ArrayList<TextView>()
+        for ((i, t) in labels.withIndex()) {
+            val b = btn(t, 11f) { onClick(i) }
+            list.add(b)
+            row.addView(b, lp(0, dp(34), 1f, 1))
+        }
+        return row to list
+    }
+
+    private fun setSegSel(list: List<TextView>, idx: Int) {
+        for (i in list.indices) list[i].background = bg(if (i == idx) cSel else cBtn)
     }
 
     private fun buildRightPanel(): View {
@@ -262,53 +466,106 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         sv.setBackgroundColor(cPanel)
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.setPadding(dp(8), dp(2), dp(8), dp(8))
+        col.setPadding(dp(8), dp(0), dp(8), dp(8))
+        val full = ViewGroup.LayoutParams.MATCH_PARENT
 
-        col.addView(label("TINGKAT (Difficulty)"))
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        val short = listOf("E", "M", "H", "X")
-        for (i in 0..3) {
-            val b = btn(short[i], 13f) { setDiff(i) }
-            diffButtons.add(b)
-            row.addView(b, lp(0, dp(36), 1f, 1))
-        }
-        col.addView(row)
-        col.addView(label("INSTRUMEN"))
-        instButton = btn("Lead Guitar ▾", 12f) { showInstMenu(it) }
-        col.addView(instButton, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
-
-        col.addView(label("SNAP"))
+        col.addView(label("SNAP (STEP)"))
         val sr = LinearLayout(this)
         sr.orientation = LinearLayout.HORIZONTAL
         sr.gravity = Gravity.CENTER_VERTICAL
-        sr.addView(btn("−", 16f) { changeSnap(-1) }, lp(dp(40), dp(38), 0f, 1))
+        sr.addView(btn("−", 16f) { changeSnap(-1) }, lp(dp(40), dp(36), 0f, 1))
         snapText = TextView(this)
         snapText.setTextColor(Color.WHITE)
         snapText.textSize = 14f
         snapText.gravity = Gravity.CENTER
         sr.addView(snapText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        sr.addView(btn("+", 16f) { changeSnap(1) }, lp(dp(40), dp(38), 0f, 1))
+        sr.addView(btn("+", 16f) { changeSnap(1) }, lp(dp(40), dp(36), 0f, 1))
         col.addView(sr)
 
-        col.addView(label("JENIS NOT"))
-        openBtn = btn("Open (nada kosong)", 12f) {
-            highway.openMode = !highway.openMode
-            updateOpenBtn()
+        // ---- tipe not baru (placement) ----
+        col.addView(label("TIPE NOT BARU"))
+        guitarPlace = LinearLayout(this)
+        guitarPlace.orientation = LinearLayout.VERTICAL
+        val (pt, ptb) = seg(listOf("Nat", "Strum", "HOPO", "Tap")) { i ->
+            highway.placeType = i
+            setSegSel(placeTypeBtns, i)
         }
-        col.addView(openBtn, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
+        placeTypeBtns = ptb
+        guitarPlace.addView(pt)
+        barBtn = btn("Open (bar)", 11f) {
+            highway.barMode = !highway.barMode
+            updateToggles()
+        }
+        guitarPlace.addView(barBtn, lp(full, dp(34), 0f, 1))
+        col.addView(guitarPlace)
+
+        drumPlace = LinearLayout(this)
+        drumPlace.orientation = LinearLayout.VERTICAL
+        cymBtn = btn("Cymbal (Y/B/O)", 11f) {
+            highway.placeCymbal = !highway.placeCymbal
+            updateToggles()
+        }
+        drumPlace.addView(cymBtn, lp(full, dp(34), 0f, 1))
+        val (pd, pdb) = seg(listOf("Normal", "Accent", "Ghost")) { i ->
+            highway.placeDyn = i
+            setSegSel(placeDynBtns, i)
+        }
+        placeDynBtns = pdb
+        drumPlace.addView(pd)
+        val barRow = LinearLayout(this)
+        barRow.orientation = LinearLayout.HORIZONTAL
+        barRow.addView(btn("Kick", 11f) {
+            highway.barMode = !highway.barMode
+            updateToggles()
+        }.also { kickBtn = it }, lp(0, dp(34), 1f, 1))
+        val dbl = btn("2× Kick", 11f) {
+            highway.placeDouble = !highway.placeDouble
+            updateToggles()
+        }
+        barRow.addView(dbl, lp(0, dp(34), 1f, 1))
+        drumPlace.addView(barRow)
+        fillBtn = btn("SP tool → Fill", 11f) {
+            highway.fillMode = !highway.fillMode
+            updateToggles()
+        }
+        drumPlace.addView(fillBtn, lp(full, dp(34), 0f, 1))
+        rollBtn = btn("Roll ganda", 11f) {
+            highway.rollDouble = !highway.rollDouble
+            updateToggles()
+        }
+        drumPlace.addView(rollBtn, lp(full, dp(34), 0f, 1))
+        col.addView(drumPlace)
+
+        // ---- not terpilih ----
         col.addView(label("NOT TERPILIH"))
-        col.addView(btn("Forced (HOPO ⇄ strum)", 12f) { highway.toggleForced() }, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
-        col.addView(btn("Tap", 12f) { highway.toggleTap() }, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
+        guitarSel = LinearLayout(this)
+        guitarSel.orientation = LinearLayout.VERTICAL
+        guitarSel.addView(seg(listOf("Nat", "Strum", "HOPO", "Tap")) { highway.setType(it) }.first)
+        col.addView(guitarSel)
+        drumSel = LinearLayout(this)
+        drumSel.orientation = LinearLayout.VERTICAL
+        drumSel.addView(btn("Tom ⇄ Cymbal", 11f) { highway.toggleCymbal() }, lp(full, dp(34), 0f, 1))
+        drumSel.addView(seg(listOf("Normal", "Accent", "Ghost")) { highway.setDynamics(it) }.first)
+        drumSel.addView(btn("2× Kick", 11f) { highway.toggleDouble() }, lp(full, dp(34), 0f, 1))
+        col.addView(drumSel)
         val sus = LinearLayout(this)
         sus.orientation = LinearLayout.HORIZONTAL
-        sus.addView(btn("Sustain −", 11f) { highway.changeSustain(-highway.snapTicks()) }, lp(0, dp(36), 1f, 1))
-        sus.addView(btn("Sustain +", 11f) { highway.changeSustain(highway.snapTicks()) }, lp(0, dp(36), 1f, 1))
+        sus.addView(btn("Sust −", 11f) { highway.changeSustain(-highway.snapTicks()) }, lp(0, dp(34), 1f, 1))
+        sus.addView(btn("Sust +", 11f) { highway.changeSustain(highway.snapTicks()) }, lp(0, dp(34), 1f, 1))
         col.addView(sus)
-        col.addView(btn("Hapus sustain", 12f) { highway.clearSustain() }, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
-        col.addView(btn("Hapus terpilih", 12f) { highway.deleteSelection() }, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(36), 0f, 1))
+        val ops = LinearLayout(this)
+        ops.orientation = LinearLayout.HORIZONTAL
+        ops.addView(btn("Hapus sust", 11f) { highway.clearSustain() }, lp(0, dp(34), 1f, 1))
+        ops.addView(btn("Hapus", 11f) { highway.deleteSelection() }, lp(0, dp(34), 1f, 1))
+        col.addView(ops)
 
-        col.addView(label("INFO"))
+        col.addView(label("INSPEKTUR"))
+        selText = TextView(this)
+        selText.setTextColor(0xFFE5E7EB.toInt())
+        selText.textSize = 11f
+        selText.typeface = Typeface.MONOSPACE
+        col.addView(selText)
+        col.addView(label("POSISI"))
         infoText = TextView(this)
         infoText.setTextColor(0xFFD1D5DB.toInt())
         infoText.textSize = 11f
@@ -323,108 +580,147 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         bar.orientation = LinearLayout.HORIZONTAL
         bar.setBackgroundColor(cBar)
         bar.gravity = Gravity.CENTER_VERTICAL
-        bar.setPadding(dp(6), 0, dp(6), 0)
+        bar.setPadding(dp(4), 0, dp(4), 0)
         val h = ViewGroup.LayoutParams.MATCH_PARENT
-        bar.addView(btn("⏮", 16f) { pausePlayback(); highway.curTick = 0.0 }, lp(dp(48), h, 0f, 4))
-        bar.addView(btn("◀", 16f) { pausePlayback(); highway.stepSnap(-1) }, lp(dp(48), h, 0f, 4))
+        bar.addView(btn("⏮", 15f) { pausePlayback(); highway.curTick = 0.0 }, lp(dp(40), h, 0f, 2))
+        bar.addView(btn("⏪", 15f) { pausePlayback(); highway.moveMeasure(-1) }, lp(dp(40), h, 0f, 2))
+        bar.addView(btn("◀", 14f) { pausePlayback(); highway.stepSnap(-1) }, lp(dp(40), h, 0f, 2))
         playBtn = btn("▶", 18f) { togglePlay() }
-        bar.addView(playBtn, lp(dp(64), h, 0f, 4))
-        bar.addView(btn("▶|", 14f) { pausePlayback(); highway.stepSnap(1) }, lp(dp(48), h, 0f, 4))
+        bar.addView(playBtn, lp(dp(56), h, 0f, 2))
+        bar.addView(btn("▶", 14f) { pausePlayback(); highway.stepSnap(1) }, lp(dp(40), h, 0f, 2))
+        bar.addView(btn("⏩", 15f) { pausePlayback(); highway.moveMeasure(1) }, lp(dp(40), h, 0f, 2))
         timeText = TextView(this)
         timeText.setTextColor(Color.WHITE)
         timeText.textSize = 13f
         timeText.typeface = Typeface.MONOSPACE
         timeText.gravity = Gravity.CENTER
         bar.addView(timeText, LinearLayout.LayoutParams(0, h, 1f))
+        metBtn = btn("🔔", 14f) {
+            setMetronome = !setMetronome
+            applySettingsToView()
+        }
+        clapBtn = btn("👏", 14f) {
+            setClap = !setClap
+            applySettingsToView()
+        }
+        bar.addView(metBtn, lp(dp(40), h, 0f, 2))
+        bar.addView(clapBtn, lp(dp(40), h, 0f, 2))
         speedBtn = btn("1.0x", 12f) { cycleSpeed() }
-        bar.addView(speedBtn, lp(dp(56), h, 0f, 4))
-        bar.addView(btn("Zoom −", 11f) { highway.range = highway.range * 1.35 }, lp(dp(64), h, 0f, 4))
-        bar.addView(btn("Zoom +", 11f) { highway.range = highway.range / 1.35 }, lp(dp(64), h, 0f, 4))
+        bar.addView(speedBtn, lp(dp(48), h, 0f, 2))
+        bar.addView(btn("−", 16f) { highway.range = highway.range * 1.35 }, lp(dp(38), h, 0f, 2))
+        bar.addView(btn("+", 16f) { highway.range = highway.range / 1.35 }, lp(dp(38), h, 0f, 2))
+        bar.addView(btn("☰", 15f) {
+            panelVisible = !panelVisible
+            applySettingsToView()
+        }, lp(dp(38), h, 0f, 2))
         return bar
+    }
+
+    private fun updateToggles() {
+        if (!::barBtn.isInitialized) return
+        barBtn.background = bg(if (highway.barMode) HighwayView.OPEN_COLOR else cBtn)
+        kickBtn.background = bg(if (highway.barMode) 0xFFF59E0B.toInt() else cBtn)
+        cymBtn.background = bg(if (highway.placeCymbal) cSel else cBtn)
+        fillBtn.background = bg(if (highway.fillMode) cSel else cBtn)
+        rollBtn.background = bg(if (highway.rollDouble) cSel else cBtn)
+        setSegSel(placeTypeBtns, highway.placeType)
+        setSegSel(placeDynBtns, highway.placeDyn)
+        val drums = highway.mode() == Mode.DRUMS
+        guitarPlace.visibility = if (drums) View.GONE else View.VISIBLE
+        guitarSel.visibility = if (drums) View.GONE else View.VISIBLE
+        drumPlace.visibility = if (drums) View.VISIBLE else View.GONE
+        drumSel.visibility = if (drums) View.VISIBLE else View.GONE
+        barBtn.text = if (highway.mode() == Mode.GHL || true) "Open (bar)" else ""
     }
 
     // ===================== menu =====================
     private fun showMenu(anchor: View, name: String) {
-        val m = PopupMenu(this, anchor)
-        val menu = m.menu
-        when (name) {
-            "File" -> {
-                menu.add(0, 1, 0, "Baru…")
-                menu.add(0, 2, 1, "Buka file .chart…")
-                menu.add(0, 3, 2, "Buka folder lagu (chart + audio)…")
-                menu.add(0, 4, 3, "Buka audio…")
-                menu.add(0, 5, 4, "Simpan")
-                menu.add(0, 6, 5, "Simpan sebagai…")
-                menu.add(0, 7, 6, "Ekspor ke folder Clone Hero…")
-                menu.add(0, 8, 7, "Pulihkan autosave")
-            }
-            "Edit" -> {
-                menu.add(0, 11, 0, "Undo")
-                menu.add(0, 12, 1, "Redo")
-                menu.add(0, 13, 2, "Pilih semua")
-                menu.add(0, 14, 3, "Salin")
-                menu.add(0, 15, 4, "Potong")
-                menu.add(0, 16, 5, "Tempel di posisi sekarang")
-                menu.add(0, 17, 6, "Hapus terpilih")
-                menu.add(0, 18, 7, "Geser terpilih ke atas (1 snap)")
-                menu.add(0, 19, 8, "Geser terpilih ke bawah (1 snap)")
-                menu.add(0, 20, 9, "Kosongkan track ini…")
-            }
-            "View" -> {
-                menu.add(0, 31, 0, "Zoom +")
-                menu.add(0, 32, 1, "Zoom −")
-                menu.add(0, 33, 2, "Reset zoom")
-                menu.add(0, 34, 3, "Ke awal lagu")
-                menu.add(0, 35, 4, "Ke akhir not")
-            }
-            "Song" -> {
-                menu.add(0, 41, 0, "Properti lagu…")
-                menu.add(0, 42, 1, "Offset audio…")
-            }
-            else -> {
-                menu.add(0, 51, 0, "Panduan")
-                menu.add(0, 52, 1, "Tentang")
-            }
+        val items: List<Pair<String, () -> Unit>> = when (name) {
+            "File" -> listOf(
+                "Baru…" to { newChart() },
+                "Buka chart (.chart / .mid)…" to { launchOpen(RQ_OPEN_CHART) },
+                "Buka folder lagu (chart + audio)…" to { launchTree(RQ_OPEN_FOLDER) },
+                "Simpan" to { saveChart() },
+                "Simpan sebagai…" to { saveAs() },
+                "Ekspor .mid…" to { exportMid() },
+                "Ekspor ke folder Clone Hero…" to { launchTree(RQ_EXPORT) },
+                "Pulihkan autosave" to { restoreAutosave() }
+            )
+            "Edit" -> listOf(
+                "Undo" to { undo() },
+                "Redo" to { redo() },
+                "Pilih semua" to { highway.selectAll() },
+                "Batal pilih" to { highway.selectNone() },
+                "Pilih seluruh section ini" to { highway.selectSectionAtCursor() },
+                "Salin" to { copySel() },
+                "Potong" to { copySel(); highway.deleteSelection() },
+                "Tempel di posisi sekarang" to { highway.paste(clip, highway.snapTickPublic(highway.curTick)) },
+                "Hapus terpilih" to { highway.deleteSelection() },
+                "Geser terpilih ▲ (1 snap)" to { highway.nudge(highway.snapTicks()) },
+                "Geser terpilih ▼ (1 snap)" to { highway.nudge(-highway.snapTicks()) },
+                "Cerminkan lane terpilih" to { highway.mirror() },
+                "Salin dari tingkat lain…" to { copyFromDifficulty() },
+                "Kosongkan track ini…" to { confirm("Kosongkan semua not di track ini?") { clearTrack() } },
+                "BPM +1 di kursor" to { bumpBpm(1000) },
+                "BPM −1 di kursor" to { bumpBpm(-1000) },
+                "Anchor BPM di kursor (on/off)" to { toggleAnchor() }
+            )
+            "View" -> listOf(
+                "Zoom +" to { highway.range = highway.range / 1.35 },
+                "Zoom −" to { highway.range = highway.range * 1.35 },
+                "Reset zoom" to { highway.range = 768.0 },
+                "Ke awal lagu" to { highway.curTick = 0.0 },
+                "Ke not terakhir" to { toLastNote() },
+                "Section sebelumnya" to { highway.jumpSection(-1) },
+                "Section berikutnya" to { highway.jumpSection(1) },
+                "Birama sebelumnya" to { highway.moveMeasure(-1) },
+                "Birama berikutnya" to { highway.moveMeasure(1) },
+                "Tampilan 3D / 2D" to { set3D = !set3D; applySettingsToView() },
+                "Waveform on/off" to { setWave = !setWave; applySettingsToView() },
+                "Tampilkan / sembunyikan panel kanan" to { panelVisible = !panelVisible; applySettingsToView() }
+            )
+            "Song" -> listOf(
+                "Properti lagu…" to { songProperties() },
+                "Offset audio…" to { offsetDialog() },
+                "Buka audio utama…" to { launchOpen(RQ_OPEN_AUDIO) },
+                "Tambah stem audio…" to { launchOpen(RQ_ADD_STEM) },
+                "Daftar audio…" to { audioList() },
+                "Muat ulang audio" to { reloadAudio() },
+                "Set preview mulai = kursor" to { setPreview("PreviewStart") },
+                "Set preview selesai = kursor" to { setPreview("PreviewEnd") }
+            )
+            "Tools" -> listOf(
+                "Validasi lagu…" to { validate() },
+                "Tap BPM…" to { tapBpm() },
+                "Ketuk lirik (stempel)…" to { lyricStamp() },
+                "Daftar event global…" to { eventList() },
+                "Resolusi chart…" to { toast("Resolusi: ${song.resolution} tick per ketukan") }
+            )
+            "Options" -> listOf(
+                "Pengaturan…" to { showSettings() },
+                "Metronome on/off" to { setMetronome = !setMetronome; applySettingsToView() },
+                "Clap on/off" to { setClap = !setClap; applySettingsToView() }
+            )
+            else -> listOf(
+                "Panduan" to { showGuide() },
+                "Tentang" to { showAbout() }
+            )
         }
+        val m = PopupMenu(this, anchor)
+        for ((i, it) in items.withIndex()) m.menu.add(0, i, i, it.first)
         m.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> newChart()
-                2 -> launchOpen(RQ_OPEN_CHART)
-                3 -> launchTree(RQ_OPEN_FOLDER)
-                4 -> launchOpen(RQ_OPEN_AUDIO)
-                5 -> saveChart()
-                6 -> saveAs()
-                7 -> launchTree(RQ_EXPORT)
-                8 -> restoreAutosave()
-                11 -> undo()
-                12 -> redo()
-                13 -> highway.selectAll()
-                14 -> {
-                    clip = highway.copySelection()
-                    toast("${clip.size} not disalin")
-                }
-                15 -> {
-                    clip = highway.copySelection()
-                    highway.deleteSelection()
-                }
-                16 -> highway.paste(clip, highway.snapTickPublic(highway.curTick))
-                17 -> highway.deleteSelection()
-                18 -> highway.nudge(highway.snapTicks())
-                19 -> highway.nudge(-highway.snapTicks())
-                20 -> confirm("Kosongkan semua not di track ini?") { clearTrack() }
-                31 -> highway.range = highway.range / 1.35
-                32 -> highway.range = highway.range * 1.35
-                33 -> highway.range = 768.0
-                34 -> highway.curTick = 0.0
-                35 -> {
-                    val n = highway.track().notes
-                    highway.curTick = if (n.isEmpty()) 0.0 else n[n.size - 1].tick.toDouble()
-                }
-                41 -> songProperties()
-                42 -> offsetDialog()
-                51 -> showGuide()
-                52 -> showAbout()
-            }
+            items[item.itemId].second()
+            true
+        }
+        m.show()
+    }
+
+    private fun showDiffMenu(anchor: View) {
+        val m = PopupMenu(this, anchor)
+        for ((i, dname) in ChartIO.difficulties.withIndex()) m.menu.add(0, i, i, dname)
+        m.setOnMenuItemClickListener { item ->
+            diffIdx = item.itemId
+            applyTrack()
             true
         }
         m.show()
@@ -432,13 +728,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
     private fun showInstMenu(anchor: View) {
         val m = PopupMenu(this, anchor)
-        var i = 0
         val keys = ArrayList<String>()
-        for ((k, v) in ChartIO.instruments) {
-            if (!ChartIO.isEditableInstrument(k)) continue
-            m.menu.add(0, i, i, v)
-            keys.add(k)
-            i++
+        for ((i, e) in ChartIO.instruments.entries.withIndex()) {
+            m.menu.add(0, i, i, e.value)
+            keys.add(e.key)
         }
         m.setOnMenuItemClickListener { item ->
             inst = keys[item.itemId]
@@ -448,26 +741,29 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         m.show()
     }
 
+    private fun copySel() {
+        clip = highway.copySelection()
+        toast("${clip.size} not disalin")
+    }
+
+    private fun toLastNote() {
+        val n = highway.track().notes
+        highway.curTick = if (n.isEmpty()) 0.0 else n[n.size - 1].tick.toDouble()
+    }
+
     // ===================== alat / track =====================
     private fun selectTool(t: Int) {
         highway.tool = t
-        for (i in toolButtons.indices) toolButtons[i].background = bg(if (i == t) cSel else cBtn)
-    }
-
-    private fun setDiff(i: Int) {
-        diffIdx = i
-        applyTrack()
+        for ((k, b) in toolButtons) b.background = bg(if (k == t) cSel else cBtn)
     }
 
     private fun applyTrack() {
         highway.trackKey = ChartIO.trackKey(ChartIO.difficulties[diffIdx], inst)
-        for (i in diffButtons.indices) diffButtons[i].background = bg(if (i == diffIdx) cSel else cBtn)
-        instButton.text = (ChartIO.instruments[inst] ?: inst) + " ▾"
+        diffChip.text = ChartIO.difficulties[diffIdx] + " ▾"
+        instChip.text = (ChartIO.instruments[inst] ?: inst) + " ▾"
+        highway.barMode = false
+        updateToggles()
         updateInfo()
-    }
-
-    private fun updateOpenBtn() {
-        openBtn.background = bg(if (highway.openMode) HighwayView.OPEN_COLOR else cBtn)
     }
 
     private fun changeSnap(dir: Int) {
@@ -482,8 +778,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
     private fun updateTitle() {
         val n = if (song.name.isEmpty()) "(tanpa judul)" else song.name
-        val a = if (audioName.isEmpty()) "tanpa audio" else audioName
-        titleText.text = "$n  •  $a" + if (dirty) "  *" else ""
+        titleText.text = n + if (dirty) " *" else ""
     }
 
     // ===================== Listener HighwayView =====================
@@ -505,6 +800,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         updateInfo()
     }
 
+    override fun onUserSeek() {
+        if (playing) pausePlayback()
+    }
+
     override fun onMarkerTap(tool: Int, tick: Int, hit: Int) {
         when (tool) {
             HighwayView.T_BPM -> {
@@ -518,7 +817,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     onNeutral = {
                         beforeEdit()
                         if (ev != null) song.bpms.remove(ev)
-                        afterSongEdit()
+                        afterSongEdit(null)
                     }
                 ) { v ->
                     val bpm = v[0].replace(',', '.').toDoubleOrNull()
@@ -527,8 +826,15 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     } else {
                         beforeEdit()
                         val milli = Math.round(bpm * 1000).toInt()
-                        if (ev != null) ev.milli = milli else song.bpms.add(BpmEv(tick, milli))
-                        afterSongEdit()
+                        val target: BpmEv
+                        if (ev != null) {
+                            ev.milli = milli
+                            target = ev
+                        } else {
+                            target = BpmEv(tick, milli)
+                            song.bpms.add(target)
+                        }
+                        afterSongEdit(target)
                     }
                 }
             }
@@ -543,12 +849,11 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     onNeutral = {
                         beforeEdit()
                         if (ev != null) song.ts.remove(ev)
-                        afterSongEdit()
+                        afterSongEdit(null)
                     }
                 ) { v ->
                     val num = v[0].toIntOrNull()
-                    val den = v[1].toIntOrNull()
-                    val exp = when (den) {
+                    val exp = when (v[1].toIntOrNull()) {
                         1 -> 0
                         2 -> 1
                         4 -> 2
@@ -565,32 +870,48 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                             ev.num = num
                             ev.denExp = exp
                         } else song.ts.add(TsEv(tick, num, exp))
-                        afterSongEdit()
+                        afterSongEdit(null)
                     }
                 }
             }
             HighwayView.T_SECTION -> {
-                val ev = if (hit >= 0) song.events[hit] else null
-                val cur = ev?.text?.removePrefix("section ") ?: ""
-                form(
-                    if (ev != null) "Ubah bagian" else "Bagian baru di tick $tick",
-                    listOf("Nama bagian (mis. Intro, Verse 1, Chorus)" to cur),
-                    listOf(InputType.TYPE_CLASS_TEXT),
-                    if (ev != null) "Hapus" else null,
-                    onNeutral = {
-                        beforeEdit()
-                        if (ev != null) song.events.remove(ev)
-                        afterSongEdit()
+                if (hit >= 0) {
+                    val ev = song.events[hit]
+                    form(
+                        "Ubah event global (tick ${ev.tick})",
+                        listOf("Teks (mis. \"section Intro\", \"lyric kata\", \"phrase_start\")" to ev.text),
+                        listOf(InputType.TYPE_CLASS_TEXT),
+                        "Hapus",
+                        onNeutral = {
+                            beforeEdit()
+                            song.events.remove(ev)
+                            afterSongEdit(null)
+                        }
+                    ) { v ->
+                        val s = v[0].trim()
+                        if (s.isNotEmpty()) {
+                            beforeEdit()
+                            ev.text = s
+                            afterSongEdit(null)
+                        }
                     }
-                ) { v ->
-                    val name = v[0].trim()
-                    if (name.isEmpty()) {
-                        toast("Nama kosong")
-                    } else {
-                        beforeEdit()
-                        if (ev != null) ev.text = "section $name" else song.events.add(TextEv(tick, "section $name"))
-                        afterSongEdit()
-                    }
+                } else {
+                    val items = arrayOf("Section", "Lirik (lyric)", "Awal frasa (phrase_start)", "Akhir frasa (phrase_end)", "Event global kustom…")
+                    AlertDialog.Builder(this).setTitle("Tambah di tick $tick").setItems(items) { _, which ->
+                        when (which) {
+                            0 -> form("Section baru", listOf("Nama (mis. Intro, Verse 1, Chorus)" to ""), listOf(InputType.TYPE_CLASS_TEXT), null, null) { v ->
+                                if (v[0].isNotBlank()) addGlobal(tick, "section ${v[0].trim()}")
+                            }
+                            1 -> form("Lirik", listOf("Suku kata / kata (akhiri dengan - bila bersambung)" to ""), listOf(InputType.TYPE_CLASS_TEXT), null, null) { v ->
+                                if (v[0].isNotBlank()) addGlobal(tick, "lyric ${v[0].trim()}")
+                            }
+                            2 -> addGlobal(tick, "phrase_start")
+                            3 -> addGlobal(tick, "phrase_end")
+                            else -> form("Event global", listOf("Teks" to ""), listOf(InputType.TYPE_CLASS_TEXT), null, null) { v ->
+                                if (v[0].isNotBlank()) addGlobal(tick, v[0].trim())
+                            }
+                        }
+                    }.show()
                 }
             }
             HighwayView.T_EVENT -> {
@@ -602,7 +923,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                         .setPositiveButton("Hapus") { _, _ ->
                             beforeEdit()
                             tr.events.remove(ev)
-                            afterSongEdit()
+                            afterSongEdit(null)
                         }
                         .setNegativeButton("Batal", null)
                         .show()
@@ -626,17 +947,184 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         }
     }
 
+    private fun addGlobal(tick: Int, text: String) {
+        beforeEdit()
+        song.events.add(TextEv(tick, text))
+        afterSongEdit(null)
+    }
+
     private fun addTrackEvent(tick: Int, text: String) {
         beforeEdit()
         highway.track().events.add(TextEv(tick, text))
-        afterSongEdit()
+        afterSongEdit(null)
     }
 
-    private fun afterSongEdit() {
+    private fun afterSongEdit(editedBpm: BpmEv?) {
         song.normalize()
+        fixAnchors(editedBpm)
         highway.rebuild()
         updateAudioLength()
         updateInfo()
+    }
+
+    // ===================== BPM =====================
+    private fun bumpBpm(delta: Int) {
+        val tick = highway.curTick.toInt()
+        var target: BpmEv? = null
+        for (b in song.bpms) if (b.tick <= tick) target = b
+        val t = target ?: return
+        beforeEdit()
+        t.milli = (t.milli + delta).coerceAtLeast(1000)
+        afterSongEdit(t)
+    }
+
+    private fun toggleAnchor() {
+        val tick = highway.snapTickPublic(highway.curTick)
+        val b = song.bpms.firstOrNull { it.tick == tick }
+        if (b == null) {
+            toast("Letakkan kursor tepat di penanda BPM")
+            return
+        }
+        beforeEdit()
+        if (b.anchor != null) b.anchor = null
+        else b.anchor = Math.round(TempoMap(song).tickToSec(b.tick.toDouble()) * 1_000_000.0)
+        highway.rebuild()
+        toast(if (b.anchor != null) "BPM di-anchor" else "Anchor dilepas")
+    }
+
+    /** Jaga agar BPM ber-anchor tetap di waktunya: ubah BPM sebelumnya. */
+    private fun fixAnchors(skip: BpmEv?) {
+        val list = song.bpms
+        for (k in 1 until list.size) {
+            val a = list[k].anchor ?: continue
+            val prev = list[k - 1]
+            if (prev === skip) continue
+            val tm = TempoMap(song)
+            val t0 = tm.tickToSec(prev.tick.toDouble())
+            val dt = a / 1_000_000.0 - t0
+            if (dt <= 0.0) continue
+            val milli = Math.round(60.0 * (list[k].tick - prev.tick) / (song.resolution * dt) * 1000.0).toInt()
+            if (milli in 1000..2000000) prev.milli = milli
+        }
+    }
+
+    private fun tapBpm() {
+        val taps = ArrayList<Long>()
+        val result = TextView(this)
+        result.textSize = 22f
+        result.gravity = Gravity.CENTER
+        result.text = "Ketuk mengikuti ketukan"
+        var bpmVal = 0.0
+        val tap = btn("TAP", 26f) {
+            val now = SystemClock.elapsedRealtime()
+            if (taps.isNotEmpty() && now - taps.last() > 2500) taps.clear()
+            taps.add(now)
+            while (taps.size > 12) taps.removeAt(0)
+            if (taps.size >= 2) {
+                val avg = (taps.last() - taps.first()).toDouble() / (taps.size - 1)
+                bpmVal = 60000.0 / avg
+                result.text = String.format(java.util.Locale.US, "%.1f BPM", bpmVal)
+            }
+        }
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(10), dp(20), dp(10))
+        col.addView(result, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(50)))
+        col.addView(tap, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(110)))
+        AlertDialog.Builder(this).setTitle("Tap BPM").setView(col)
+            .setPositiveButton("Terapkan di kursor") { _, _ ->
+                if (bpmVal >= 20) {
+                    val tick = highway.snapTickPublic(highway.curTick)
+                    beforeEdit()
+                    val existing = song.bpms.firstOrNull { it.tick == tick }
+                    val milli = Math.round(bpmVal * 1000).toInt()
+                    val t: BpmEv
+                    if (existing != null) {
+                        existing.milli = milli
+                        t = existing
+                    } else {
+                        t = BpmEv(tick, milli)
+                        song.bpms.add(t)
+                    }
+                    afterSongEdit(t)
+                }
+            }
+            .setNegativeButton("Tutup", null).show()
+    }
+
+    // ===================== lirik =====================
+    private fun lyricStamp() {
+        val et = EditText(this)
+        et.hint = "Satu baris = satu frasa. Pisahkan kata/suku kata dengan spasi."
+        et.minLines = 6
+        et.gravity = Gravity.TOP
+        AlertDialog.Builder(this).setTitle("Lirik").setView(et)
+            .setPositiveButton("Mulai") { _, _ ->
+                val lines = et.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }
+                if (lines.isEmpty()) return@setPositiveButton
+                runLyricStamper(lines.map { l -> l.split(" ").filter { it.isNotEmpty() } })
+            }.setNegativeButton("Batal", null).show()
+    }
+
+    private fun runLyricStamper(lines: List<List<String>>) {
+        var li = 0
+        var wi = 0
+        var prevPhraseOpen = false
+        val tv = TextView(this)
+        tv.textSize = 20f
+        tv.gravity = Gravity.CENTER
+        fun refresh() {
+            tv.text = if (li >= lines.size) "Selesai" else "Berikut: ${lines[li][wi]}\n(baris ${li + 1}/${lines.size})"
+        }
+        refresh()
+        val stamp = btn("STEMPEL di kursor", 18f) {
+            if (li < lines.size) {
+                val tick = highway.snapTickPublic(highway.curTick)
+                beforeEdit()
+                if (wi == 0) {
+                    if (prevPhraseOpen) song.events.add(TextEv(tick, "phrase_end"))
+                    song.events.add(TextEv(tick, "phrase_start"))
+                    prevPhraseOpen = true
+                }
+                song.events.add(TextEv(tick, "lyric ${lines[li][wi]}"))
+                wi++
+                if (wi >= lines[li].size) {
+                    wi = 0
+                    li++
+                    if (li >= lines.size) song.events.add(TextEv(tick + highway.snapTicks() * 2, "phrase_end"))
+                }
+                afterSongEdit(null)
+                refresh()
+            }
+        }
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(10), dp(20), dp(10))
+        col.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)))
+        col.addView(stamp, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(80)))
+        AlertDialog.Builder(this).setTitle("Ketuk lirik (putar musik / geser kursor)").setView(col)
+            .setPositiveButton("Tutup", null).show()
+    }
+
+    private fun eventList() {
+        val evs = song.events.sortedBy { it.tick }
+        if (evs.isEmpty()) {
+            toast("Belum ada event global")
+            return
+        }
+        val names = evs.map { "${it.tick}: ${it.text}" }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Event global (ketuk untuk hapus / loncat)")
+            .setItems(names) { _, i ->
+                val ev = evs[i]
+                AlertDialog.Builder(this).setTitle(ev.text)
+                    .setPositiveButton("Loncat ke sini") { _, _ -> highway.curTick = ev.tick.toDouble() }
+                    .setNegativeButton("Hapus") { _, _ ->
+                        beforeEdit()
+                        song.events.remove(ev)
+                        afterSongEdit(null)
+                    }
+                    .setNeutralButton("Batal", null).show()
+            }.setNegativeButton("Tutup", null).show()
     }
 
     // ===================== undo / redo =====================
@@ -683,9 +1171,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
         i.addCategory(Intent.CATEGORY_OPENABLE)
         i.type = "*/*"
-        if (rq == RQ_OPEN_AUDIO) {
-            i.type = "audio/*"
-        }
+        if (rq == RQ_OPEN_AUDIO || rq == RQ_ADD_STEM) i.type = "audio/*"
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         launcher.launch(i)
     }
@@ -706,6 +1192,15 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         launcher.launch(i)
     }
 
+    private fun exportMid() {
+        pending = RQ_EXPORT_MID
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "audio/midi"
+        i.putExtra(Intent.EXTRA_TITLE, "notes.mid")
+        launcher.launch(i)
+    }
+
     private fun displayName(uri: Uri): String {
         try {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
@@ -716,9 +1211,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         return uri.lastPathSegment ?: ""
     }
 
-    private fun readText(uri: Uri): String {
+    private fun readBytes(uri: Uri): ByteArray {
         val ins = contentResolver.openInputStream(uri) ?: throw IllegalStateException("tidak bisa membuka file")
-        return ins.use { it.readBytes().toString(Charsets.UTF_8) }
+        return ins.use { it.readBytes() }
     }
 
     private fun writeText(uri: Uri, text: String) {
@@ -728,12 +1223,17 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
     private fun loadChartFromUri(uri: Uri) {
         val name = displayName(uri)
+        val bytes = readBytes(uri)
         if (name.endsWith(".mid", true) || name.endsWith(".midi", true)) {
-            toast("Format .mid belum didukung. Gunakan file .chart")
+            val s = MidiIO.read(bytes)
+            chartUri = null
+            applySong(s, keepAudio = true)
+            dirty = true
+            updateTitle()
+            toast("MIDI diimpor. Gunakan Simpan sebagai… untuk menyimpan ke .chart")
             return
         }
-        val text = readText(uri)
-        val s = ChartIO.parse(text)
+        val s = ChartIO.parse(bytes.toString(Charsets.UTF_8))
         chartUri = uri
         applySong(s, keepAudio = true)
         toast("Chart dibuka: $name")
@@ -759,20 +1259,55 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         val kids = listChildren(tree)
         val chart = kids.firstOrNull { it.name.equals("notes.chart", true) }
             ?: kids.firstOrNull { it.name.endsWith(".chart", true) }
-        if (chart == null) {
-            toast("Tidak ada file .chart di folder ini")
+        val mid = kids.firstOrNull { it.name.equals("notes.mid", true) } ?: kids.firstOrNull { it.name.endsWith(".mid", true) }
+        if (chart == null && mid == null) {
+            toast("Tidak ada file .chart / .mid di folder ini")
             return
         }
-        val audioExt = listOf(".ogg", ".opus", ".mp3", ".wav", ".m4a")
-        val audio = kids.firstOrNull { k -> k.name.startsWith("song.", true) && audioExt.any { k.name.endsWith(it, true) } }
-            ?: kids.firstOrNull { k -> k.name.startsWith("guitar.", true) && audioExt.any { k.name.endsWith(it, true) } }
-            ?: kids.firstOrNull { k -> audioExt.any { k.name.endsWith(it, true) } }
-        val cu = DocumentsContract.buildDocumentUriUsingTree(tree, chart.id)
-        chartUri = cu
-        applySong(ChartIO.parse(readText(cu)), keepAudio = false)
-        if (audio != null) {
-            loadAudio(DocumentsContract.buildDocumentUriUsingTree(tree, audio.id), audio.name)
-        } else toast("Chart dibuka, audio tidak ditemukan — pilih lewat File > Buka audio")
+        val s: Song
+        if (chart != null) {
+            val cu = DocumentsContract.buildDocumentUriUsingTree(tree, chart.id)
+            chartUri = cu
+            s = ChartIO.parse(readBytes(cu).toString(Charsets.UTF_8))
+        } else {
+            chartUri = null
+            s = MidiIO.read(readBytes(DocumentsContract.buildDocumentUriUsingTree(tree, mid!!.id)))
+        }
+        // song.ini
+        val ini = kids.firstOrNull { it.name.equals("song.ini", true) }
+        if (ini != null) {
+            try {
+                val text = readBytes(DocumentsContract.buildDocumentUriUsingTree(tree, ini.id)).toString(Charsets.UTF_8)
+                val map = HashMap<String, String>()
+                for (l in text.lines()) {
+                    val i = l.indexOf('=')
+                    if (i > 0) map[l.substring(0, i).trim().lowercase()] = l.substring(i + 1).trim()
+                }
+                fun fill(key: String, ini: String) {
+                    if ((s.meta[key] ?: "").isEmpty() && !map[ini].isNullOrEmpty()) s.meta[key] = map[ini]!!
+                }
+                fill("Name", "name")
+                fill("Artist", "artist")
+                fill("Album", "album")
+                fill("Genre", "genre")
+                fill("Charter", "charter")
+                fill("Year", "year")
+            } catch (e: Exception) {
+            }
+        }
+        applySong(s, keepAudio = false)
+        if (mid != null && chart == null) {
+            dirty = true
+            updateTitle()
+        }
+        val exts = listOf(".ogg", ".opus", ".mp3", ".wav", ".m4a")
+        val audios = kids.filter { k -> exts.any { k.name.endsWith(it, true) } && !k.name.startsWith("preview", true) }
+        val main = audios.firstOrNull { it.name.startsWith("song.", true) } ?: audios.firstOrNull()
+        if (main != null) {
+            addStem(DocumentsContract.buildDocumentUriUsingTree(tree, main.id), main.name)
+            for (a in audios) if (a !== main) addStem(DocumentsContract.buildDocumentUriUsingTree(tree, a.id), a.name)
+            afterAudioChange()
+        } else toast("Chart dibuka, audio tidak ditemukan — pilih lewat Song > Buka audio utama")
     }
 
     private fun saveChart() {
@@ -793,9 +1328,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
     private fun exportFolder(tree: Uri) {
         val text = ChartIO.write(song)
-        val au = audioUri
-        val an = audioName
+        val mainStem = stems.firstOrNull()
+        val extra = stems.drop(1).map { it.uri to it.name }
         val kids = listChildren(tree)
+        val m = song.meta
         Thread {
             try {
                 val treeDoc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
@@ -805,26 +1341,38 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     else DocumentsContract.createDocument(contentResolver, treeDoc, mime, name)
                         ?: throw IllegalStateException("gagal membuat $name")
                 }
-                var audioFile = ""
-                if (au != null) {
-                    val ext = if (an.contains('.')) an.substringAfterLast('.').lowercase() else "ogg"
-                    audioFile = "song.$ext"
-                    val t = target(audioFile, "application/octet-stream")
-                    contentResolver.openInputStream(au)?.use { ins ->
+                fun copyAudio(u: Uri, outName: String) {
+                    val t = target(outName, "application/octet-stream")
+                    contentResolver.openInputStream(u)?.use { ins ->
                         contentResolver.openOutputStream(t, "wt")?.use { os -> ins.copyTo(os) }
+                    }
+                }
+                val files = ArrayList<String>()
+                if (mainStem != null) {
+                    val ext = if (mainStem.name.contains('.')) mainStem.name.substringAfterLast('.').lowercase() else "ogg"
+                    copyAudio(mainStem.uri, "song.$ext")
+                    files.add("song.$ext")
+                    for ((u, n) in extra) {
+                        copyAudio(u, n)
+                        files.add(n)
                     }
                 }
                 val tc = target("notes.chart", "application/octet-stream")
                 contentResolver.openOutputStream(tc, "wt")?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
                 val ini = StringBuilder()
                 ini.append("[song]\r\n")
-                ini.append("name = ").append(song.meta["Name"] ?: "").append("\r\n")
-                ini.append("artist = ").append(song.meta["Artist"] ?: "").append("\r\n")
-                ini.append("charter = ").append(song.meta["Charter"] ?: "").append("\r\n")
-                ini.append("genre = ").append(song.meta["Genre"] ?: "rock").append("\r\n")
+                ini.append("name = ").append(m["Name"] ?: "").append("\r\n")
+                ini.append("artist = ").append(m["Artist"] ?: "").append("\r\n")
+                ini.append("album = ").append(m["Album"] ?: "").append("\r\n")
+                ini.append("genre = ").append(m["Genre"] ?: "rock").append("\r\n")
+                ini.append("year = ").append((m["Year"] ?: "").removePrefix(",").trim()).append("\r\n")
+                ini.append("charter = ").append(m["Charter"] ?: "").append("\r\n")
+                ini.append("diff_guitar = ").append(m["Difficulty"] ?: "0").append("\r\n")
+                val ps = ((m["PreviewStart"]?.toDoubleOrNull() ?: 0.0) * 1000).toInt()
+                ini.append("preview_start_time = ").append(ps).append("\r\n")
                 val ti = target("song.ini", "text/plain")
                 contentResolver.openOutputStream(ti, "wt")?.use { it.write(ini.toString().toByteArray(Charsets.UTF_8)) }
-                runOnUiThread { toast("Diekspor ke folder (notes.chart, song.ini" + (if (audioFile.isNotEmpty()) ", $audioFile" else "") + ")") }
+                runOnUiThread { toast("Diekspor: notes.chart, song.ini" + (if (files.isNotEmpty()) ", " + files.joinToString(", ") else "")) }
             } catch (e: Exception) {
                 runOnUiThread { toast("Ekspor gagal: ${e.message}") }
             }
@@ -870,7 +1418,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             s.meta["Charter"] = v[2]
             chartUri = null
             applySong(s, keepAudio = true)
-            toast("Atur BPM dengan alat BPM, lalu muat audio lewat File > Buka audio")
+            toast("Atur BPM dengan alat BPM, lalu muat audio lewat Song > Buka audio utama")
         }
     }
 
@@ -879,8 +1427,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         song = s
         undoStack.clear()
         redoStack.clear()
-        if (!keepAudio) releasePlayer()
-        // pilih track pertama yang ada isinya (prioritas Expert Single)
+        if (!keepAudio) releaseStems()
         var chosen: Pair<Int, String>? = null
         var bestScore = -1
         for ((key, tr) in s.tracks) {
@@ -909,43 +1456,92 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     }
 
     // ===================== audio =====================
-    private fun loadAudio(uri: Uri, name: String) {
-        releasePlayer()
+    private fun addStem(uri: Uri, name: String) {
         try {
             val mp = MediaPlayer()
             mp.setDataSource(this, uri)
             mp.prepare()
-            mp.setOnCompletionListener { pausePlayback() }
-            player = mp
-            audioUri = uri
-            audioName = name
-            if (song.meta["MusicStream"].isNullOrEmpty() || song.meta["MusicStream"] == "song.ogg") {
-                if (name.isNotEmpty()) song.meta["MusicStream"] = name
+            mp.setVolume(setVolume / 100f, setVolume / 100f)
+            if (stems.isEmpty()) mp.setOnCompletionListener { pausePlayback() }
+            stems.add(Stem(uri, name, mp))
+            if (stems.size == 1) {
+                val ms = song.meta["MusicStream"]
+                if (ms.isNullOrEmpty() || ms == "song.ogg") song.meta["MusicStream"] = name
             }
-            updateAudioLength()
-            updateTitle()
-            toast("Audio dimuat: $name")
         } catch (e: Exception) {
-            toast("Audio gagal dimuat: ${e.message}")
-            audioUri = null
-            audioName = ""
+            toast("Audio gagal dimuat ($name): ${e.message}")
         }
     }
 
-    private fun releasePlayer() {
-        try {
-            player?.release()
+    private fun afterAudioChange() {
+        wave = null
+        highway.waveform = null
+        updateAudioLength()
+        updateTitle()
+        if (stems.isNotEmpty()) toast("Audio dimuat: ${stems.joinToString(", ") { it.name }}")
+        if (setWave) loadWaveform()
+    }
+
+    private fun loadWaveform() {
+        val main = stems.firstOrNull() ?: return
+        val job = ++waveJob
+        toast("Membuat waveform…")
+        Thread {
+            val w = WaveformLoader.load(this, main.uri, 100) { job != waveJob }
+            runOnUiThread {
+                if (job == waveJob) {
+                    wave = w
+                    highway.waveform = w
+                    if (w == null) toast("Waveform gagal dibuat")
+                }
+            }
+        }.start()
+    }
+
+    private fun releaseStems() {
+        pausePlayback()
+        waveJob++
+        for (s in stems) try {
+            s.player.release()
         } catch (e: Exception) {
         }
-        player = null
-        audioUri = null
-        audioName = ""
-        audioStarted = false
+        stems.clear()
+        wave = null
+        highway.waveform = null
         highway.lengthTicks = 0
     }
 
+    private fun reloadAudio() {
+        val list = stems.map { it.uri to it.name }
+        if (list.isEmpty()) {
+            toast("Belum ada audio")
+            return
+        }
+        releaseStems()
+        for ((u, n) in list) addStem(u, n)
+        afterAudioChange()
+    }
+
+    private fun audioList() {
+        if (stems.isEmpty()) {
+            toast("Belum ada audio")
+            return
+        }
+        val names = stems.mapIndexed { i, s -> (if (i == 0) "[utama] " else "") + s.name }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Audio (ketuk untuk membuang)")
+            .setItems(names) { _, i ->
+                val s = stems.removeAt(i)
+                try {
+                    s.player.release()
+                } catch (e: Exception) {
+                }
+                if (i == 0 && stems.isNotEmpty()) stems[0].player.setOnCompletionListener { pausePlayback() }
+                afterAudioChange()
+            }.setNegativeButton("Tutup", null).show()
+    }
+
     private fun updateAudioLength() {
-        val mp = player
+        val mp = stems.firstOrNull()?.player
         if (mp == null) {
             highway.lengthTicks = 0
             return
@@ -956,9 +1552,8 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     }
 
     private fun applySpeed() {
-        val mp = player ?: return
-        try {
-            mp.playbackParams = PlaybackParams().setSpeed(speed)
+        for (s in stems) try {
+            s.player.playbackParams = PlaybackParams().setSpeed(speed)
         } catch (e: Exception) {
         }
     }
@@ -988,10 +1583,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
     private fun startPlayback() {
         if (playing) return
-        val tm = highway.tempo
-        startChartSec = tm.tickToSec(highway.curTick)
+        startChartSec = highway.tempo.tickToSec(highway.curTick)
         wallStart = SystemClock.elapsedRealtime()
         audioStarted = false
+        lastTick = highway.curTick
         playing = true
         playBtn.text = "⏸"
         highway.postOnAnimation(frame)
@@ -1001,9 +1596,8 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         if (!playing) return
         playing = false
         playBtn.text = "▶"
-        try {
-            val mp = player
-            if (mp != null && audioStarted && mp.isPlaying) mp.pause()
+        for (s in stems) try {
+            if (s.player.isPlaying) s.player.pause()
         } catch (e: Exception) {
         }
         audioStarted = false
@@ -1013,21 +1607,23 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         val now = SystemClock.elapsedRealtime()
         val wallChart = startChartSec + (now - wallStart) / 1000.0 * speed
         var chartSec = wallChart
-        val mp = player
-        if (mp != null) {
+        val main = stems.firstOrNull()?.player
+        if (main != null) {
             try {
                 if (!audioStarted) {
                     val ap = wallChart + song.offset
                     if (ap >= 0.0) {
-                        mp.seekTo((ap * 1000).toInt())
-                        mp.start()
+                        for (s in stems) {
+                            s.player.seekTo((ap * 1000).toInt())
+                            s.player.start()
+                        }
                         applySpeed()
                         audioStarted = true
                         startChartSec = wallChart
                         wallStart = now
                     }
                 } else {
-                    val ac = mp.currentPosition / 1000.0 - song.offset
+                    val ac = main.currentPosition / 1000.0 - song.offset
                     if (abs(ac - wallChart) > 0.06) {
                         startChartSec = ac
                         wallStart = now
@@ -1037,7 +1633,16 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             } catch (e: Exception) {
             }
         }
-        highway.curTick = highway.tempo.secToTick(chartSec)
+        val t = highway.tempo.secToTick(chartSec + setCalib / 1000.0)
+        if (t > lastTick && t - lastTick < song.resolution * 2) {
+            if (setMetronome) {
+                val lines = BeatGrid.lines(song, Math.floor(lastTick).toInt() + 1, Math.floor(t).toInt())
+                if (lines.isNotEmpty()) (if (lines.any { it.isMeasure }) metronomeHi else metronomeLo)?.play()
+            }
+            if (setClap && highway.notesBetween(lastTick, t) > 0) clap?.play()
+        }
+        lastTick = t
+        highway.curTick = t
     }
 
     // ===================== info =====================
@@ -1052,9 +1657,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             "BPM   ${ChartIO.bpmText(a)}\n" +
             "TS    ${ts.num}/${1 shl ts.denExp}\n" +
             "Not   ${tr.notes.size}\n" +
-            "SP    ${tr.starpower.size}\n" +
-            "Pilih ${highway.selection.size}\n" +
+            "SP    ${tr.starpower.count { it.kind == 2 }}\n" +
             "Res   ${song.resolution}"
+        selText.text = highway.selectionSummary()
         val m = max(0.0, sec)
         val mm = (m / 60).toInt()
         val ss = m - mm * 60
@@ -1077,7 +1682,48 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         t.starpower.clear()
         t.events.clear()
         highway.selection.clear()
-        afterSongEdit()
+        afterSongEdit(null)
+    }
+
+    private fun copyFromDifficulty() {
+        val names = ChartIO.difficulties.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Salin dari tingkat… (menimpa tingkat sekarang)")
+            .setItems(names) { _, i ->
+                if (i == diffIdx) return@setItems
+                val src = song.tracks[ChartIO.trackKey(ChartIO.difficulties[i], inst)]
+                if (src == null || src.isEmpty()) {
+                    toast("Tingkat itu kosong")
+                    return@setItems
+                }
+                confirm("Timpa ${ChartIO.difficulties[diffIdx]} dengan isi ${ChartIO.difficulties[i]}?") {
+                    beforeEdit()
+                    val copy = src.deepCopy()
+                    song.tracks[ChartIO.trackKey(ChartIO.difficulties[diffIdx], inst)] = copy
+                    highway.selection.clear()
+                    highway.rebuild()
+                    updateInfo()
+                }
+            }.show()
+    }
+
+    private fun validate() {
+        val mp = stems.firstOrNull()?.player
+        val len = if (mp != null) mp.duration / 1000.0 else 0.0
+        val tv = TextView(this)
+        tv.text = Validator.report(song, mp != null, len)
+        tv.textSize = 12f
+        tv.typeface = Typeface.MONOSPACE
+        tv.setPadding(dp(20), dp(10), dp(20), dp(10))
+        val sv = ScrollView(this)
+        sv.addView(tv)
+        AlertDialog.Builder(this).setTitle("Validasi lagu").setView(sv).setPositiveButton("Tutup", null).show()
+    }
+
+    private fun setPreview(key: String) {
+        beforeEdit()
+        val sec = highway.tempo.tickToSec(highway.curTick) + song.offset
+        song.meta[key] = Song.trimFloat(max(0.0, sec).toFloat())
+        toast("$key = ${song.meta[key]} detik")
     }
 
     private fun form(
@@ -1153,39 +1799,41 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 song.offset = o
                 updateAudioLength()
                 updateInfo()
+                highway.invalidate()
             }
         }
     }
 
     private fun showGuide() {
         val msg = """
-ALAT (kolom kiri) — istilah Moonscraper dalam tanda kurung
+LAYAR (mirip Moonscraper)
+• Bar atas: menu File / Edit / View / Song / Tools / Options / Help, pilihan tingkat (Easy–Expert) dan instrumen, Undo / Redo / Simpan.
+• Kiri: kotak alat. Tekan lama sebuah ikon untuk melihat namanya.
+• Tengah: highway. Garis putih bawah = garis pukul (posisi pemutaran).
+• Kanan: panel snap, tipe not, aksi untuk not terpilih, inspektur. Tombol ☰ di bar bawah menyembunyikan / menampilkan panel.
+• Bar bawah: ⏮ awal, ⏪ ⏩ birama, ◀ ▶ satu snap, putar, waktu, 🔔 metronome, 👏 clap, kecepatan, zoom, panel.
 
-• Geser (Pan): seret layar naik/turun untuk menggulir lagu. Di alat lain, geser dengan dua jari.
-• Pilih (Cursor): ketuk not untuk memilih / batal pilih, atau seret kotak untuk memilih banyak. Lalu pakai tombol Forced, Tap, Sustain, Hapus di panel kanan.
-• Hapus (Eraser): ketuk atau seret di atas not untuk menghapus.
-• Not (Note tool): ketuk jalur untuk menaruh not (ketuk lagi untuk menghapus). Tekan lalu seret ke atas untuk membuat sustain. Aktifkan tombol "Open" untuk not open (ungu).
-• Star Power: seret dari awal ke akhir frasa. Ketuk saja untuk membuat 1 birama / menghapus frasa.
-• BPM: ketuk tempat BPM berubah. Ketuk penanda oranye untuk mengubah / menghapus.
-• Birama (Time Signature): sama seperti BPM, penanda biru.
-• Bagian (Section): nama bagian lagu (Intro, Chorus, …) — tampil hijau di kiri.
-• Event: solo / soloend (ungu, kanan highway) pada track yang sedang dipilih.
+ALAT (istilah Moonscraper dalam kurung)
+✋ Geser (Pan): seret naik/turun. Di alat lain, geser dengan dua jari. Cubit = zoom.
+↖ Pilih (Cursor): ketuk not (memilih seluruh chord bila "Chord select" aktif); seret kotak di area kosong untuk memilih banyak; seret not yang sudah terpilih untuk memindahkannya (Grab move).
+⌫ Hapus (Eraser): ketuk / seret di atas not.
+● Not (Note): ketuk jalur untuk menaruh not (ketuk lagi = hapus). Tekan dan seret ke atas = sustain. Tombol Open/Kick menaruh not bar.
+★ Star Power: seret awal → akhir. Ketuk = frasa 1 birama / hapus. Untuk drum, tombol "SP tool → Fill" membuat drum fill (ungu).
+≋ Drum Roll: seperti star power; "Roll ganda" untuk roll ganda (hijau).
+♩ BPM / 4/4 Time Signature / § Section & lirik / ⚑ Event (solo): ketuk posisi, isi dialog. Ketuk penanda yang ada untuk mengubah atau menghapus.
 
-PANEL KANAN
-• E / M / H / X = Easy / Medium / Hard / Expert. Instrumen dipilih lewat tombol di bawahnya.
-• Snap = kerapatan penempatan (1/4 = per ketukan, 1/8, 1/16 dst). Di Moonscraper ini sama dengan tombol snap.
-• Forced mengubah not HOPO ↔ strum. Not HOPO ditandai lingkaran putih. Tap = not tap (ungu).
+INSTRUMEN
+Guitar, Co-op, Bass, Rhythm, Keys (5 lane + open), GHL (6 lane + open), Drums (4/5 lane, kick, cymbal/tom, accent, ghost, kick 2×, roll, fill).
+Tipe not: Nat = natural, Strum, HOPO, Tap (tombol "TIPE NOT BARU" untuk yang baru, "NOT TERPILIH" untuk yang sudah ada).
 
-BAR BAWAH
-• ⏮ awal, ◀ ▶| loncat satu snap, ▶ putar. Tombol kecepatan memperlambat audio (berguna saat charting).
-• Garis horizontal putih di bawah adalah "garis pukul" — posisi pemutaran.
-• Strip di tepi kanan layar = posisi lagu; sentuh / seret untuk loncat cepat.
-• Cubit dengan dua jari = zoom jarak not.
+TOOLS
+• Validasi lagu, Tap BPM, Ketuk lirik (stempel kata ke posisi sekarang sambil memutar musik), Daftar event global.
+• Edit > Anchor BPM: mengunci waktu penanda BPM; mengubah BPM sebelumnya akan menyesuaikan BPM sebelum anchor agar tidak bergeser.
+• File mendukung .chart dan .mid (impor / ekspor).
 
 TIPS
-• Sebelum menaruh not, buat dulu BPM yang benar dan sesuaikan Offset (Song > Offset audio) sampai garis ketukan pas dengan musik.
-• Simpan sering lewat tombol Simpan. Autosave dibuat otomatis saat aplikasi ditutup.
-• "Ekspor ke folder Clone Hero" membuat notes.chart + song.ini + song.<audio> siap dipakai.
+• Atur BPM dan Offset (Song > Offset audio) dulu sampai garis ketukan pas dengan musik. Aktifkan waveform di Options untuk membantu.
+• Simpan sering. Autosave dibuat saat aplikasi ditutup.
         """.trimIndent()
         val tv = TextView(this)
         tv.text = msg
@@ -1200,7 +1848,7 @@ TIPS
         AlertDialog.Builder(this)
             .setTitle("ChartDroid")
             .setMessage(
-                "Editor chart gaya Moonscraper untuk Android (format .chart / Clone Hero).\n\n" +
+                "Editor chart gaya Moonscraper untuk Android (format .chart / .mid, Clone Hero).\n\n" +
                     "Terinspirasi dari Moonscraper Chart Editor oleh Alexander Ong (BSD-3-Clause). " +
                     "Aplikasi ini bukan produk resmi Moonscraper dan tidak berafiliasi dengannya."
             )
@@ -1224,9 +1872,12 @@ TIPS
     override fun onDestroy() {
         super.onDestroy()
         pausePlayback()
-        try {
-            player?.release()
+        for (s in stems) try {
+            s.player.release()
         } catch (e: Exception) {
         }
+        metronomeHi?.release()
+        metronomeLo?.release()
+        clap?.release()
     }
 }

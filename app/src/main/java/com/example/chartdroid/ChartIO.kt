@@ -6,21 +6,22 @@ import java.util.Locale
 object ChartIO {
     val difficulties = listOf("Easy", "Medium", "Hard", "Expert")
 
-    /** Nama instrumen di file -> nama tampilan. Hanya jenis gitar (5 fret) yang dapat disunting. */
+    /** Nama instrumen di file -> nama tampilan. */
     val instruments = linkedMapOf(
-        "Single" to "Lead Guitar",
-        "DoubleGuitar" to "Co-op Guitar",
+        "Single" to "Guitar",
+        "DoubleGuitar" to "Guitar Co-op",
         "DoubleBass" to "Bass",
-        "DoubleRhythm" to "Rhythm Guitar",
+        "DoubleRhythm" to "Rhythm",
         "Keyboard" to "Keys",
         "Drums" to "Drums",
         "GHLGuitar" to "GHL Guitar",
-        "GHLBass" to "GHL Bass"
+        "GHLBass" to "GHL Bass",
+        "GHLRhythm" to "GHL Rhythm",
+        "GHLCoop" to "GHL Co-op",
+        "GHLKeys" to "GHL Keys"
     )
 
-    private val editable = setOf("Single", "DoubleGuitar", "DoubleBass", "DoubleRhythm", "Keyboard")
-
-    fun isEditableInstrument(inst: String) = inst in editable
+    fun isEditableInstrument(inst: String) = instruments.containsKey(inst)
 
     fun trackKey(diff: String, inst: String) = diff + inst
 
@@ -48,6 +49,9 @@ object ChartIO {
         var inBlock = false
         var unknownLines: ArrayList<String>? = null
         val flagTicks = HashMap<String, Pair<HashSet<Int>, HashSet<Int>>>()
+        class Ext(val tick: Int, val kind: Int, val fret: Int)
+        val ext = HashMap<String, ArrayList<Ext>>()
+        val anchors = ArrayList<Pair<Int, Long>>()
 
         val text = textIn.removePrefix("﻿")
         for (rawLine in text.lineSequence()) {
@@ -96,6 +100,8 @@ object ChartIO {
                         song.rawSync.add(RawLine(tick ?: 0, line))
                     } else if (tk[0] == "B" && tk.size >= 2 && tk[1].toIntOrNull() != null) {
                         song.bpms.add(BpmEv(tick, tk[1].toInt()))
+                    } else if (tk[0] == "A" && tk.size >= 2 && tk[1].toLongOrNull() != null) {
+                        anchors.add(tick to tk[1].toLong())
                     } else if (tk[0] == "TS" && tk.size >= 2 && tk[1].toIntOrNull() != null) {
                         song.ts.add(TsEv(tick, tk[1].toInt(), if (tk.size >= 3) tk[2].toIntOrNull() ?: 2 else 2))
                     } else {
@@ -124,19 +130,34 @@ object ChartIO {
                             continue
                         }
                         val tk = value.split(" ").filter { it.isNotEmpty() }
+                        val drums = st.second == "Drums"
+                        val ghl = st.second.startsWith("GHL")
                         when {
                             tk.size >= 3 && tk[0] == "N" -> {
                                 val f = tk[1].toIntOrNull()
                                 val len = tk[2].toIntOrNull() ?: 0
-                                when (f) {
-                                    0, 1, 2, 3, 4, 7 -> track.notes.add(NoteObj(tick, f, len))
-                                    5 -> flagTicks.getOrPut(sec) { HashSet<Int>() to HashSet() }.first.add(tick)
-                                    6 -> flagTicks.getOrPut(sec) { HashSet<Int>() to HashSet() }.second.add(tick)
-                                    else -> track.raw.add(RawLine(tick, value))
+                                if (f == null) {
+                                    track.raw.add(RawLine(tick, value))
+                                } else if (drums) {
+                                    when (f) {
+                                        0, 1, 2, 3, 4, 5 -> track.notes.add(NoteObj(tick, f, len))
+                                        32 -> track.notes.add(NoteObj(tick, 0, len, fl = NoteObj.FL_DOUBLE))
+                                        in 33..38 -> ext.getOrPut(sec) { ArrayList() }.add(Ext(tick, NoteObj.FL_ACCENT, f - 33))
+                                        in 40..44 -> ext.getOrPut(sec) { ArrayList() }.add(Ext(tick, NoteObj.FL_GHOST, f - 39))
+                                        66, 67, 68 -> ext.getOrPut(sec) { ArrayList() }.add(Ext(tick, NoteObj.FL_CYMBAL, f - 64))
+                                        else -> track.raw.add(RawLine(tick, value))
+                                    }
+                                } else {
+                                    when {
+                                        f in 0..4 || f == 7 || (ghl && f == 8) -> track.notes.add(NoteObj(tick, f, len))
+                                        f == 5 -> flagTicks.getOrPut(sec) { HashSet<Int>() to HashSet() }.first.add(tick)
+                                        f == 6 -> flagTicks.getOrPut(sec) { HashSet<Int>() to HashSet() }.second.add(tick)
+                                        else -> track.raw.add(RawLine(tick, value))
+                                    }
                                 }
                             }
-                            tk.size >= 3 && tk[0] == "S" && tk[1] == "2" ->
-                                track.starpower.add(Phrase(tick, tk[2].toIntOrNull() ?: 0))
+                            tk.size >= 3 && tk[0] == "S" && (tk[1] == "2" || tk[1] == "64" || tk[1] == "65" || tk[1] == "66") ->
+                                track.starpower.add(Phrase(tick, tk[2].toIntOrNull() ?: 0, tk[1].toInt()))
                             tk.isNotEmpty() && tk[0] == "E" && value.length > 2 ->
                                 track.events.add(TextEv(tick, unquote(value.substring(2))))
                             else -> track.raw.add(RawLine(tick, value))
@@ -163,6 +184,28 @@ object ChartIO {
                 }
                 if (!any) track.raw.add(RawLine(t, "N 6 0"))
             }
+        }
+        for ((sec, list) in ext) {
+            val track = song.track(sec)
+            for (x in list) {
+                var any = false
+                for (n in track.notes) if (n.tick == x.tick && n.fret == x.fret) {
+                    n.fl = n.fl or x.kind
+                    any = true
+                }
+                if (!any) {
+                    val code = when (x.kind) {
+                        NoteObj.FL_ACCENT -> 33 + x.fret
+                        NoteObj.FL_GHOST -> 39 + x.fret
+                        else -> 64 + x.fret
+                    }
+                    track.raw.add(RawLine(x.tick, "N $code 0"))
+                }
+            }
+        }
+        for ((t, micro) in anchors) {
+            val b = song.bpms.firstOrNull { it.tick == t }
+            if (b != null) b.anchor = micro else song.rawSync.add(RawLine(t, "A $micro"))
         }
         if (!song.meta.containsKey("Resolution")) song.meta["Resolution"] = song.resolution.toString()
         song.normalize()
@@ -193,9 +236,13 @@ object ChartIO {
             val txt = if (t.denExp == 2) "TS ${t.num}" else "TS ${t.num} ${t.denExp}"
             sync.add(Line(t.tick, 0, 0, txt))
         }
-        for (b in song.bpms) sync.add(Line(b.tick, 1, 0, "B ${b.milli}"))
+        for (b in song.bpms) {
+            sync.add(Line(b.tick, 1, 0, "B ${b.milli}"))
+            val an = b.anchor
+            if (an != null) sync.add(Line(b.tick, 1, 1, "A $an"))
+        }
         for (r in song.rawSync) sync.add(Line(r.tick, 2, 0, r.text))
-        sync.sortWith(compareBy<Line>({ it.tick }, { it.order }))
+        sync.sortWith(compareBy<Line>({ it.tick }, { it.order }, { it.sub }))
         for (l in sync) sb.append("  ").append(l.tick).append(" = ").append(l.text).append(nl)
         sb.append("}").append(nl)
 
@@ -212,14 +259,23 @@ object ChartIO {
             val lines = ArrayList<Line>()
             val flaggedForced = HashSet<Int>()
             val flaggedTap = HashSet<Int>()
+            val drums = splitTrack(name)?.second == "Drums"
             for (n in track.notes) {
-                lines.add(Line(n.tick, 1, n.fret, "N ${n.fret} ${n.length}"))
-                if (n.forced) flaggedForced.add(n.tick)
-                if (n.tap) flaggedTap.add(n.tick)
+                if (drums) {
+                    val code = if (n.fret == 0 && n.dbl) 32 else n.fret
+                    lines.add(Line(n.tick, 1, n.fret, "N $code ${n.length}"))
+                    if (n.cymbal && n.fret in 2..4) lines.add(Line(n.tick, 1, 100 + n.fret, "N ${64 + n.fret} 0"))
+                    if (n.accent && n.fret in 1..5) lines.add(Line(n.tick, 1, 110 + n.fret, "N ${33 + n.fret} 0"))
+                    if (n.ghost && n.fret in 1..5) lines.add(Line(n.tick, 1, 120 + n.fret, "N ${39 + n.fret} 0"))
+                } else {
+                    lines.add(Line(n.tick, 1, n.fret, "N ${n.fret} ${n.length}"))
+                    if (n.forced) flaggedForced.add(n.tick)
+                    if (n.tap) flaggedTap.add(n.tick)
+                }
             }
             for (t in flaggedForced) lines.add(Line(t, 1, 100, "N 5 0"))
             for (t in flaggedTap) lines.add(Line(t, 1, 101, "N 6 0"))
-            for (p in track.starpower) lines.add(Line(p.tick, 0, 0, "S 2 ${p.length}"))
+            for (p in track.starpower) lines.add(Line(p.tick, 0, p.kind, "S ${p.kind} ${p.length}"))
             for (e in track.events) lines.add(Line(e.tick, 2, 0, "E ${e.text}"))
             for (r in track.raw) lines.add(Line(r.tick, 3, 0, r.text))
             lines.sortWith(compareBy<Line>({ it.tick }, { it.order }, { it.sub }))

@@ -3,15 +3,37 @@ package com.example.chartdroid
 import java.util.Locale
 
 /** Satu not. fret: 0..4 = Hijau, Merah, Kuning, Biru, Oranye; 7 = Open. */
-class NoteObj(var tick: Int, var fret: Int, var length: Int = 0, var tap: Boolean = false, var forced: Boolean = false) {
-    fun copy() = NoteObj(tick, fret, length, tap, forced)
+class NoteObj(var tick: Int, var fret: Int, var length: Int = 0, var tap: Boolean = false, var forced: Boolean = false, var fl: Int = 0) {
+    fun copy() = NoteObj(tick, fret, length, tap, forced, fl)
+
+    var cymbal: Boolean
+        get() = fl and FL_CYMBAL != 0
+        set(v) { fl = if (v) fl or FL_CYMBAL else fl and FL_CYMBAL.inv() }
+    var accent: Boolean
+        get() = fl and FL_ACCENT != 0
+        set(v) { fl = if (v) fl or FL_ACCENT else fl and FL_ACCENT.inv() }
+    var ghost: Boolean
+        get() = fl and FL_GHOST != 0
+        set(v) { fl = if (v) fl or FL_GHOST else fl and FL_GHOST.inv() }
+    var dbl: Boolean
+        get() = fl and FL_DOUBLE != 0
+        set(v) { fl = if (v) fl or FL_DOUBLE else fl and FL_DOUBLE.inv() }
+
+    companion object {
+        const val FL_CYMBAL = 1
+        const val FL_ACCENT = 2
+        const val FL_GHOST = 4
+        const val FL_DOUBLE = 8
+    }
 }
 
-class Phrase(var tick: Int, var length: Int)
+/** kind: 2 = star power, 64 = drum fill, 65 = drum roll tunggal, 66 = drum roll ganda. */
+class Phrase(var tick: Int, var length: Int, var kind: Int = 2)
 
 class TextEv(var tick: Int, var text: String)
 
-class BpmEv(var tick: Int, var milli: Int)
+/** anchor: waktu (mikrodetik) tempat BPM ini dikunci; null bila tidak di-anchor. */
+class BpmEv(var tick: Int, var milli: Int, var anchor: Long? = null)
 
 class TsEv(var tick: Int, var num: Int, var denExp: Int)
 
@@ -35,7 +57,7 @@ class Track {
     fun deepCopy(): Track {
         val t = Track()
         for (n in notes) t.notes.add(n.copy())
-        for (p in starpower) t.starpower.add(Phrase(p.tick, p.length))
+        for (p in starpower) t.starpower.add(Phrase(p.tick, p.length, p.kind))
         for (e in events) t.events.add(TextEv(e.tick, e.text))
         t.raw.addAll(raw)
         return t
@@ -188,5 +210,90 @@ object BeatGrid {
             if (end != Int.MAX_VALUE) startMeasure += (end - t.tick + measure - 1) / measure
         }
         return out
+    }
+}
+
+
+enum class Mode { GUITAR, GHL, DRUMS }
+
+/** Aturan HOPO alami (sama seperti Clone Hero / Moonscraper). */
+object Hopo {
+    /** Kembalikan array parallel: true bila not tersebut HOPO efektif (natural xor forced, tap = bukan HOPO). */
+    fun effective(notes: List<NoteObj>, res: Int): BooleanArray {
+        val nat = natural(notes, res)
+        val out = BooleanArray(notes.size)
+        for (i in notes.indices) out[i] = if (notes[i].tap) false else (nat[i] != notes[i].forced)
+        return out
+    }
+
+    fun natural(notes: List<NoteObj>, res: Int): BooleanArray {
+        val n = notes.size
+        val out = BooleanArray(n)
+        val limit = 65 * res / 192
+        var i = 0
+        var prevStart = -1
+        var prevEnd = -1
+        while (i < n) {
+            var j = i
+            while (j < n && notes[j].tick == notes[i].tick) j++
+            val chord = (j - i) > 1
+            if (!chord && prevStart >= 0) {
+                val prevChord = (prevEnd - prevStart) > 1
+                val same = !prevChord && notes[prevStart].fret == notes[i].fret
+                out[i] = !same && (notes[i].tick - notes[prevStart].tick) <= limit
+            }
+            prevStart = i
+            prevEnd = j
+            i = j
+        }
+        return out
+    }
+}
+
+/** Susunan jalur untuk tiap jenis instrumen. */
+class Lanes(val mode: Mode, val drum5: Boolean) {
+    /** Fret yang digambar sebagai jalur, urut dari kiri. */
+    val frets: IntArray = when (mode) {
+        Mode.GUITAR -> intArrayOf(0, 1, 2, 3, 4)
+        Mode.GHL -> intArrayOf(0, 1, 2, 3, 4, 8)
+        Mode.DRUMS -> if (drum5) intArrayOf(1, 2, 3, 4, 5) else intArrayOf(1, 2, 3, 4)
+    }
+    val count get() = frets.size
+    /** Fret yang digambar sebagai bar selebar highway (open / kick). */
+    val barFret: Int get() = if (mode == Mode.DRUMS) 0 else 7
+
+    fun laneOf(fret: Int): Int {
+        if (mode == Mode.DRUMS && !drum5 && fret == 5) return 3
+        for (i in frets.indices) if (frets[i] == fret) return i
+        return -1
+    }
+
+    fun fretOf(lane: Int): Int = frets[lane.coerceIn(0, frets.size - 1)]
+
+    fun color(fret: Int): Int = when (mode) {
+        Mode.GUITAR -> if (fret == 7) 0xFFA855F7.toInt() else GUITAR_COLORS[fret.coerceIn(0, 4)]
+        Mode.GHL -> when (fret) {
+            0, 1, 2 -> 0xFFF3F4F6.toInt()
+            3, 4, 8 -> 0xFF4B5563.toInt()
+            else -> 0xFFA855F7.toInt()
+        }
+        Mode.DRUMS -> when (fret) {
+            0 -> 0xFFF59E0B.toInt()
+            1 -> 0xFFEF4444.toInt()
+            2 -> 0xFFEAB308.toInt()
+            3 -> 0xFF3B82F6.toInt()
+            4 -> if (drum5) 0xFFF97316.toInt() else 0xFF22C55E.toInt()
+            else -> 0xFF22C55E.toInt()
+        }
+    }
+
+    companion object {
+        val GUITAR_COLORS = intArrayOf(0xFF22C55E.toInt(), 0xFFEF4444.toInt(), 0xFFEAB308.toInt(), 0xFF3B82F6.toInt(), 0xFFF97316.toInt())
+
+        fun modeOf(inst: String): Mode = when {
+            inst == "Drums" -> Mode.DRUMS
+            inst.startsWith("GHL") -> Mode.GHL
+            else -> Mode.GUITAR
+        }
     }
 }

@@ -11,7 +11,6 @@ import android.view.View
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 
 /** Tampilan "highway" ala Moonscraper: not mengalir dari atas ke garis pukul di bawah. */
 class HighwayView(context: Context) : View(context) {
@@ -26,22 +25,18 @@ class HighwayView(context: Context) : View(context) {
         const val T_TS = 6
         const val T_SECTION = 7
         const val T_EVENT = 8
-
-        val FRET_COLORS = intArrayOf(
-            0xFF22C55E.toInt(), 0xFFEF4444.toInt(), 0xFFEAB308.toInt(), 0xFF3B82F6.toInt(), 0xFFF97316.toInt()
-        )
-        const val OPEN_COLOR = 0xFFA855F7.toInt()
+        const val T_ROLL = 9
         private const val PERSP = 2.0
+        const val OPEN_COLOR = 0xFFA855F7.toInt()
     }
 
     interface Listener {
-        /** Dipanggil sebelum perubahan pertama pada satu gestur (untuk undo). */
         fun beforeEdit()
         fun onChanged()
         fun onPositionChanged(tick: Double)
-        /** Alat BPM/TS/Section/Event diketuk. hit = indeks marker yang kena, atau -1. */
         fun onMarkerTap(tool: Int, tick: Int, hit: Int)
         fun onSelectionChanged()
+        fun onUserSeek()
     }
 
     var listener: Listener? = null
@@ -67,7 +62,38 @@ class HighwayView(context: Context) : View(context) {
             field = v
             invalidate()
         }
-    var openMode = false
+
+    // opsi tempat not baru
+    var barMode = false
+    var placeType = 0       // 0 natural, 1 strum, 2 hopo, 3 tap
+    var placeCymbal = true  // drum: yellow/blue/orange dibuat cymbal
+    var placeDyn = 0        // 0 normal, 1 accent, 2 ghost
+    var placeDouble = false // kick ganda
+    var fillMode = false    // alat Star Power membuat drum fill
+    var rollDouble = false  // alat roll membuat roll ganda
+    var chordSelect = true
+    var extSustain = true
+    var view3D = true
+        set(v) {
+            field = v
+            invalidate()
+        }
+    var showWave = false
+        set(v) {
+            field = v
+            invalidate()
+        }
+    var waveform: Waveform? = null
+        set(v) {
+            field = v
+            invalidate()
+        }
+    var drum5Pref = false
+        set(v) {
+            field = v
+            rebuild()
+        }
+
     var lengthTicks = 0
     var curTick = 0.0
         set(v) {
@@ -75,7 +101,6 @@ class HighwayView(context: Context) : View(context) {
             listener?.onPositionChanged(field)
             invalidate()
         }
-    /** Jumlah tick yang terlihat dari garis pukul sampai ujung atas. */
     var range = 768.0
         set(v) {
             field = v.coerceIn(96.0, 24000.0)
@@ -85,6 +110,8 @@ class HighwayView(context: Context) : View(context) {
     val selection = LinkedHashSet<NoteObj>()
 
     var tempo = TempoMap(song)
+        private set
+    var lanes = Lanes(Mode.GUITAR, false)
         private set
     private var hopo = BooleanArray(0)
     private var maxSustain = 0
@@ -110,6 +137,8 @@ class HighwayView(context: Context) : View(context) {
     private var dragging = false
     private var multi = false
     private var scrub = false
+    private var isTouching = false
+    private var grab = false
     private var changedInGesture = false
     private var lastTickUnderFinger = 0.0
     private var lastFocusY = 0f
@@ -123,40 +152,25 @@ class HighwayView(context: Context) : View(context) {
 
     fun track(): Track = song.track(trackKey)
 
+    fun instrument(): String = ChartIO.splitTrack(trackKey)?.second ?: "Single"
+
+    fun mode(): Mode = Lanes.modeOf(instrument())
+
     fun snapTicks(): Int = max(1, song.resolution * 4 / snapDiv)
 
-    /** Panggil setelah data lagu/track berubah. */
     fun rebuild() {
         song.normalize()
         tempo = TempoMap(song)
         val notes = track().notes
-        val n = notes.size
-        hopo = BooleanArray(n)
-        maxSustain = 0
-        val hopoLimit = 65 * song.resolution / 192
-        var i = 0
-        var prevStart = -1
-        var prevEnd = -1
-        while (i < n) {
-            var j = i
-            while (j < n && notes[j].tick == notes[i].tick) j++
-            val chord = (j - i) > 1
-            if (!chord && prevStart >= 0) {
-                val prevChord = (prevEnd - prevStart) > 1
-                val prevTick = notes[prevStart].tick
-                val same = !prevChord && notes[prevStart].fret == notes[i].fret
-                val natural = !same && (notes[i].tick - prevTick) <= hopoLimit
-                hopo[i] = if (notes[i].tap) false else (natural != notes[i].forced)
-            } else {
-                hopo[i] = false
-            }
-            for (k in i until j) {
-                if (notes[k].length > maxSustain) maxSustain = notes[k].length
-            }
-            prevStart = i
-            prevEnd = j
-            i = j
+        val md = mode()
+        val five = md == Mode.DRUMS && (drum5Pref || notes.any { it.fret == 5 })
+        if (lanes.mode != md || lanes.drum5 != five) {
+            lanes = Lanes(md, five)
+            layoutGeometry(width, height)
         }
+        hopo = if (md == Mode.DRUMS) BooleanArray(notes.size) else Hopo.effective(notes, song.resolution)
+        maxSustain = 0
+        for (n in notes) if (n.length > maxSustain) maxSustain = n.length
         invalidate()
     }
 
@@ -173,12 +187,13 @@ class HighwayView(context: Context) : View(context) {
         }
     }
 
-    // ---------- geometri perspektif ----------
+    // ---------- geometri ----------
     private val kNorm = 1.0 - 1.0 / (1.0 + PERSP)
 
-    private fun pOfZ(z: Double): Double = (1.0 - 1.0 / (1.0 + PERSP * z)) / kNorm
+    private fun pOfZ(z: Double): Double = if (view3D) (1.0 - 1.0 / (1.0 + PERSP * z)) / kNorm else z
 
     private fun zOfP(pp: Double): Double {
+        if (!view3D) return pp
         val q = pp * kNorm
         return (1.0 / (1.0 - q) - 1.0) / PERSP
     }
@@ -187,57 +202,65 @@ class HighwayView(context: Context) : View(context) {
 
     private fun yOfP(pp: Double): Float = (hitY - pp * (hitY - topY)).toFloat()
 
-    private fun scaleOfP(pp: Double): Float = (1.0 - 0.42 * pp).toFloat().coerceAtLeast(0.2f)
+    private fun scaleOfP(pp: Double): Float = if (view3D) (1.0 - 0.42 * pp).toFloat().coerceAtLeast(0.2f) else 1f
 
     private fun yOfTick(tick: Double): Float = yOfP(pOfTick(tick))
 
-    private fun tickOfY(y: Float): Double {
-        val pp = ((hitY - y) / (hitY - topY)).toDouble().coerceAtMost(0.98)
-        return curTick + zOfP(pp) * range
-    }
+    private fun pOfY(y: Float): Double = ((hitY - y) / (hitY - topY)).toDouble().coerceAtMost(0.98)
 
-    private fun laneX(lane: Float, pp: Double): Float = cx + (lane - 2f) * laneW * scaleOfP(pp)
+    private fun tickOfY(y: Float): Double = curTick + zOfP(pOfY(y)) * range
+
+    private fun laneX(lane: Float, pp: Double): Float = cx + (lane - (lanes.count - 1) / 2f) * laneW * scaleOfP(pp)
+
+    private fun leftEdge(pp: Double): Float = laneX(0f, pp) - laneW * 0.5f * scaleOfP(pp)
+
+    private fun rightEdge(pp: Double): Float = laneX((lanes.count - 1).toFloat(), pp) + laneW * 0.5f * scaleOfP(pp)
 
     private fun laneAt(x: Float, y: Float): Int {
-        val pp = ((hitY - y) / (hitY - topY)).toDouble().coerceAtMost(0.98)
+        val pp = pOfY(y)
         val s = scaleOfP(pp)
-        val l = ((x - cx) / (laneW * s) + 2.5f)
-        return floor(l).coerceIn(0, 4)
+        val l = ((x - cx) / (laneW * s) + (lanes.count - 1) / 2f + 0.5f)
+        return floorI(l).coerceIn(0, lanes.count - 1)
     }
 
-    private fun floor(v: Float): Int = if (v >= 0) v.toInt() else (v.toInt() - 1)
+    private fun floorI(v: Float): Int = if (v >= 0) v.toInt() else (v.toInt() - 1)
 
-    private fun snapTick(t: Double): Int {
+    fun snapTick(t: Double): Int {
         val s = snapTicks()
         return (Math.round(t / s) * s).toInt().coerceAtLeast(0)
     }
 
-    // ---------- ukuran ----------
+    private fun h(): Float = height.toFloat()
+
+    private fun pBottom(): Double = (hitY - h()) / (hitY - topY).toDouble()
+
+    private fun tickAtBottom(): Double = curTick + zOfP(pBottom().coerceIn(-0.2, 0.0)) * range
+
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
         super.onSizeChanged(w, h, ow, oh)
         layoutGeometry(w, h)
     }
 
     private fun layoutGeometry(w: Int, h: Int) {
+        if (w == 0 || h == 0) return
         hitY = h * 0.84f
         topY = h * 0.03f
         cx = (w - 30 * d) / 2f
-        val hw = min((w - 30 * d) * 0.62f, h * 0.95f)
-        laneW = hw / 5f
+        val hw = min((w - 30 * d) * 0.62f, h * (if (lanes.count > 5) 1.15f else 0.95f))
+        laneW = hw / lanes.count
         stripX = w - 22 * d
     }
 
     // ---------- gambar ----------
     override fun onDraw(c: Canvas) {
-        val w = width
-        val h = height
-        if (hitY == 0f) layoutGeometry(w, h)
+        if (hitY == 0f) layoutGeometry(width, height)
         p.reset()
         p.isAntiAlias = true
-        c.drawColor(0xFF161821.toInt())
-
+        c.drawColor(0xFF15161D.toInt())
         drawHighwayBody(c)
+        if (showWave) drawWave(c)
         drawBeatLines(c)
+        drawPhraseBands(c)
         drawMarkers(c)
         drawStarpower(c)
         drawNotes(c)
@@ -247,32 +270,49 @@ class HighwayView(context: Context) : View(context) {
     }
 
     private fun drawHighwayBody(c: Canvas) {
+        val pBot = pBottom()
         val pTop = 1.0
-        val pBot = (hitY - h()) / (hitY - topY).toDouble()
         path.reset()
-        path.moveTo(laneX(0f, pBot) - laneW * 0.5f * scaleOfP(pBot), yOfP(pBot))
-        path.lineTo(laneX(0f, pTop) - laneW * 0.5f * scaleOfP(pTop), yOfP(pTop))
-        path.lineTo(laneX(4f, pTop) + laneW * 0.5f * scaleOfP(pTop), yOfP(pTop))
-        path.lineTo(laneX(4f, pBot) + laneW * 0.5f * scaleOfP(pBot), yOfP(pBot))
+        path.moveTo(leftEdge(pBot), yOfP(pBot))
+        path.lineTo(leftEdge(pTop), yOfP(pTop))
+        path.lineTo(rightEdge(pTop), yOfP(pTop))
+        path.lineTo(rightEdge(pBot), yOfP(pBot))
         path.close()
         p.style = Paint.Style.FILL
-        p.color = 0xFF0C0D13.toInt()
+        p.color = 0xFF0B0C11.toInt()
         c.drawPath(path, p)
-        // pembatas jalur
         p.style = Paint.Style.STROKE
         p.strokeWidth = 1.2f * d
-        for (i in 0..5) {
+        for (i in 0..lanes.count) {
             val lane = i - 0.5f
-            p.color = if (i == 0 || i == 5) 0xFF5A5F73.toInt() else 0xFF2A2D3B.toInt()
+            p.color = if (i == 0 || i == lanes.count) 0xFF646A82.toInt() else 0xFF262938.toInt()
             c.drawLine(laneX(lane, pBot), yOfP(pBot), laneX(lane, pTop), yOfP(pTop), p)
         }
     }
 
-    private fun h(): Float = height.toFloat()
+    private fun drawWave(c: Canvas) {
+        val w = waveform ?: return
+        val off = song.offset
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 3f * d
+        p.color = 0x663B6FA8
+        var y = hitY + 20 * d
+        if (y > h()) y = h()
+        while (y > topY) {
+            val pp = pOfY(y)
+            val tick = tickOfY(y)
+            val sec = tempo.tickToSec(tick) + off
+            val a = w.at(sec)
+            if (a > 0.01f) {
+                val half = (rightEdge(pp) - leftEdge(pp)) * 0.5f * a
+                c.drawLine(cx - half, y, cx + half, y, p)
+            }
+            y -= 3 * d
+        }
+    }
 
     private fun drawBeatLines(c: Canvas) {
-        val pBot = (hitY - h()) / (hitY - topY).toDouble()
-        val fromTick = (tickOfYForPBot(pBot)).toInt().coerceAtLeast(0)
+        val fromTick = tickAtBottom().toInt().coerceAtLeast(0)
         val toTick = (curTick + range).toInt() + 1
         var lines = BeatGrid.lines(song, fromTick, toTick)
         if (lines.size > 400) lines = lines.filter { it.isMeasure }
@@ -281,9 +321,8 @@ class HighwayView(context: Context) : View(context) {
             val pp = pOfTick(l.tick.toDouble())
             if (pp > 1.01) continue
             val y = yOfP(pp)
-            val s = scaleOfP(pp)
-            val left = laneX(0f, pp) - laneW * 0.5f * s
-            val right = laneX(4f, pp) + laneW * 0.5f * s
+            val left = leftEdge(pp)
+            val right = rightEdge(pp)
             p.style = Paint.Style.STROKE
             p.strokeWidth = (if (l.isMeasure) 1.6f else 0.8f) * d
             p.color = if (l.isMeasure) 0xFFB5B9CC.toInt() else 0xFF3C4054.toInt()
@@ -297,21 +336,45 @@ class HighwayView(context: Context) : View(context) {
         }
     }
 
-    private fun tickOfYForPBot(pBot: Double): Double = curTick + zOfP(pBot.coerceAtMost(0.0).coerceAtLeast(-0.2)) * range
+    private fun drawPhraseBands(c: Canvas) {
+        val lo = tickAtBottom()
+        val hi = curTick + range
+        p.style = Paint.Style.FILL
+        for (ph in track().starpower) {
+            if (ph.kind == 2) continue
+            val end = ph.tick + max(ph.length, 1)
+            if (end < lo || ph.tick > hi) continue
+            val p0 = pOfTick(max(ph.tick.toDouble(), lo)).coerceAtLeast(-0.2)
+            val p1 = pOfTick(min(end.toDouble(), hi)).coerceAtMost(1.0)
+            path.reset()
+            path.moveTo(leftEdge(p0), yOfP(p0))
+            path.lineTo(rightEdge(p0), yOfP(p0))
+            path.lineTo(rightEdge(p1), yOfP(p1))
+            path.lineTo(leftEdge(p1), yOfP(p1))
+            path.close()
+            p.color = if (ph.kind == 64) 0x33A855F7 else 0x3322C55E
+            c.drawPath(path, p)
+        }
+    }
+
+    private fun evColor(t: String): Int = when {
+        t.startsWith("section ") -> 0xFF059669.toInt()
+        t.startsWith("lyric ") -> 0xFFDB2777.toInt()
+        t == "phrase_start" || t == "phrase_end" -> 0xFF0E7490.toInt()
+        else -> 0xFF6B7280.toInt()
+    }
 
     private fun drawMarkers(c: Canvas) {
-        val pBot = (hitY - h()) / (hitY - topY).toDouble()
-        val lo = tickOfYForPBot(pBot) - song.resolution
+        val lo = tickAtBottom() - song.resolution
         val hi = curTick + range
         p.textAlign = Paint.Align.RIGHT
         p.textSize = 11f * d
-        // BPM & TS di kiri highway
         for (b in song.bpms) {
             if (b.tick < lo || b.tick > hi) continue
             val pp = pOfTick(b.tick.toDouble())
             val y = yOfP(pp)
-            val x = laneX(0f, pp) - laneW * 0.5f * scaleOfP(pp) - 4 * d
-            val label = ChartIO.bpmText(b.milli)
+            val x = leftEdge(pp) - 4 * d
+            val label = ChartIO.bpmText(b.milli) + (if (b.anchor != null) " ⚓" else "")
             val tw = p.measureText(label)
             rf.set(x - tw - 10 * d, y - 18 * d, x, y - 2 * d)
             p.style = Paint.Style.FILL
@@ -324,7 +387,7 @@ class HighwayView(context: Context) : View(context) {
             if (t.tick < lo || t.tick > hi) continue
             val pp = pOfTick(t.tick.toDouble())
             val y = yOfP(pp)
-            val x = laneX(0f, pp) - laneW * 0.5f * scaleOfP(pp) - 4 * d
+            val x = leftEdge(pp) - 4 * d
             val label = "${t.num}/${1 shl t.denExp}"
             val tw = p.measureText(label)
             rf.set(x - tw - 10 * d, y + 2 * d, x, y + 18 * d)
@@ -334,27 +397,24 @@ class HighwayView(context: Context) : View(context) {
             p.color = 0xFFFFFFFF.toInt()
             c.drawText(label, x - 5 * d, y + 13.5f * d, p)
         }
-        // Section di tepi kiri layar
         p.textAlign = Paint.Align.LEFT
         for (e in song.events) {
             if (e.tick < lo || e.tick > hi) continue
             val y = yOfTick(e.tick.toDouble())
             val label = if (e.text.startsWith("section ")) e.text.substring(8) else e.text
-            val isSection = e.text.startsWith("section ")
             val tw = p.measureText(label)
             rf.set(4 * d, y - 9 * d, 4 * d + tw + 12 * d, y + 9 * d)
             p.style = Paint.Style.FILL
-            p.color = if (isSection) 0xFF059669.toInt() else 0xFF6B7280.toInt()
+            p.color = evColor(e.text)
             c.drawRoundRect(rf, 4 * d, 4 * d, p)
             p.color = 0xFFFFFFFF.toInt()
             c.drawText(label, 10 * d, y + 4 * d, p)
         }
-        // Event track (solo dsb) di kanan highway
         for (e in track().events) {
             if (e.tick < lo || e.tick > hi) continue
             val pp = pOfTick(e.tick.toDouble())
             val y = yOfP(pp)
-            val x = laneX(4f, pp) + laneW * 0.5f * scaleOfP(pp) + 14 * d
+            val x = rightEdge(pp) + 14 * d
             val tw = p.measureText(e.text)
             rf.set(x, y - 9 * d, x + tw + 12 * d, y + 9 * d)
             p.style = Paint.Style.FILL
@@ -366,17 +426,17 @@ class HighwayView(context: Context) : View(context) {
     }
 
     private fun drawStarpower(c: Canvas) {
-        val pBot = (hitY - h()) / (hitY - topY).toDouble()
-        val lo = tickOfYForPBot(pBot)
+        val lo = tickAtBottom()
         val hi = curTick + range
         p.style = Paint.Style.FILL
         for (ph in track().starpower) {
+            if (ph.kind != 2) continue
             val end = ph.tick + max(ph.length, 1)
             if (end < lo || ph.tick > hi) continue
             val p0 = pOfTick(max(ph.tick.toDouble(), lo)).coerceAtLeast(-0.2)
             val p1 = pOfTick(min(end.toDouble(), hi)).coerceAtMost(1.0)
-            val x0 = laneX(4f, p0) + laneW * 0.5f * scaleOfP(p0) + 4 * d * scaleOfP(p0)
-            val x1 = laneX(4f, p1) + laneW * 0.5f * scaleOfP(p1) + 4 * d * scaleOfP(p1)
+            val x0 = rightEdge(p0) + 4 * d * scaleOfP(p0)
+            val x1 = rightEdge(p1) + 4 * d * scaleOfP(p1)
             val w0 = 6 * d * scaleOfP(p0)
             val w1 = 6 * d * scaleOfP(p1)
             path.reset()
@@ -391,7 +451,7 @@ class HighwayView(context: Context) : View(context) {
     }
 
     private fun inStar(tick: Int): Boolean {
-        for (ph in track().starpower) if (tick >= ph.tick && tick < ph.tick + max(ph.length, 1)) return true
+        for (ph in track().starpower) if (ph.kind == 2 && tick >= ph.tick && tick < ph.tick + max(ph.length, 1)) return true
         return false
     }
 
@@ -408,11 +468,9 @@ class HighwayView(context: Context) : View(context) {
     private fun drawNotes(c: Canvas) {
         val notes = track().notes
         if (notes.isEmpty()) return
-        val pBot = (hitY - h()) / (hitY - topY).toDouble()
-        val lo = tickOfYForPBot(pBot)
+        val lo = tickAtBottom()
         val hi = curTick + range
         var i = lowerBound(notes, (lo - maxSustain).toInt())
-        // sustain dulu (di bawah not)
         val first = i
         while (i < notes.size && notes[i].tick <= hi) {
             val n = notes[i]
@@ -422,7 +480,7 @@ class HighwayView(context: Context) : View(context) {
         i = first
         while (i < notes.size && notes[i].tick <= hi) {
             val n = notes[i]
-            if (n.tick >= lo - song.resolution / 4) drawNote(c, n, i)
+            if (n.tick >= lo - song.resolution / 4) drawNote(c, n, i, 255)
             i++
         }
     }
@@ -431,60 +489,106 @@ class HighwayView(context: Context) : View(context) {
         val p0 = pOfTick(max(n.tick.toDouble(), lo)).coerceAtLeast(-0.2)
         val p1 = pOfTick(min(n.tick + n.length.toDouble(), hi)).coerceAtMost(1.0)
         if (p1 <= p0) return
-        val col = if (n.fret == 7) OPEN_COLOR else FRET_COLORS[n.fret.coerceIn(0, 4)]
+        val bar = n.fret == lanes.barFret
+        val lane = lanes.laneOf(n.fret)
+        if (!bar && lane < 0) return
         p.style = Paint.Style.FILL
-        p.color = col
-        p.alpha = 190
-        if (n.fret == 7) {
-            path.reset()
-            val w = laneW * 2.3f
-            path.moveTo(laneX(2f, p0) - w * scaleOfP(p0) / 2f, yOfP(p0))
-            path.lineTo(laneX(2f, p0) + w * scaleOfP(p0) / 2f, yOfP(p0))
-            path.lineTo(laneX(2f, p1) + w * scaleOfP(p1) / 2f, yOfP(p1))
-            path.lineTo(laneX(2f, p1) - w * scaleOfP(p1) / 2f, yOfP(p1))
-            path.close()
-            p.alpha = 90
-            c.drawPath(path, p)
-        } else {
-            val hw = laneW * 0.09f
-            path.reset()
-            path.moveTo(laneX(n.fret.toFloat(), p0) - hw * scaleOfP(p0), yOfP(p0))
-            path.lineTo(laneX(n.fret.toFloat(), p0) + hw * scaleOfP(p0), yOfP(p0))
-            path.lineTo(laneX(n.fret.toFloat(), p1) + hw * scaleOfP(p1), yOfP(p1))
-            path.lineTo(laneX(n.fret.toFloat(), p1) - hw * scaleOfP(p1), yOfP(p1))
-            path.close()
-            c.drawPath(path, p)
-        }
+        p.color = lanes.color(n.fret)
+        p.alpha = if (bar) 90 else 190
+        val cxl = if (bar) (lanes.count - 1) / 2f else lane.toFloat()
+        val hw = if (bar) laneW * lanes.count * 0.45f else laneW * 0.09f
+        path.reset()
+        path.moveTo(laneX(cxl, p0) - hw * scaleOfP(p0), yOfP(p0))
+        path.lineTo(laneX(cxl, p0) + hw * scaleOfP(p0), yOfP(p0))
+        path.lineTo(laneX(cxl, p1) + hw * scaleOfP(p1), yOfP(p1))
+        path.lineTo(laneX(cxl, p1) - hw * scaleOfP(p1), yOfP(p1))
+        path.close()
+        c.drawPath(path, p)
         p.alpha = 255
     }
 
-    private fun drawNote(c: Canvas, n: NoteObj, idx: Int) {
+    private fun drawNote(c: Canvas, n: NoteObj, idx: Int, fa: Int) {
         val pp = pOfTick(n.tick.toDouble())
         if (pp > 1.02) return
         val s = scaleOfP(pp)
         val y = yOfP(pp)
         val passed = n.tick < curTick - 1
-        val alpha = if (passed) 110 else 255
-        val r = laneW * 0.40f * s
+        val alpha = if (passed) min(110, fa) else fa
+        val r = laneW * 0.40f * s * (if (lanes.count > 5) 0.92f else 1f)
         val sel = selection.contains(n)
-        if (n.fret == 7) {
-            rf.set(laneX(0f, pp) - laneW * 0.45f * s, y - r * 0.55f, laneX(4f, pp) + laneW * 0.45f * s, y + r * 0.55f)
+        val md = lanes.mode
+        val col = lanes.color(n.fret)
+
+        if (n.fret == lanes.barFret) {
+            rf.set(leftEdge(pp) + 2 * d, y - r * 0.5f, rightEdge(pp) - 2 * d, y + r * 0.5f)
             p.style = Paint.Style.FILL
-            p.color = OPEN_COLOR
+            p.color = col
             p.alpha = alpha
             c.drawRoundRect(rf, r * 0.5f, r * 0.5f, p)
             p.style = Paint.Style.STROKE
             p.strokeWidth = 2f * d * s
-            p.color = if (sel) 0xFFFFFF00.toInt() else 0xFFE9D5FF.toInt()
+            p.color = if (sel) 0xFFFFFF00.toInt() else 0xFFFFFFFF.toInt()
             p.alpha = alpha
             c.drawRoundRect(rf, r * 0.5f, r * 0.5f, p)
+            if (md == Mode.DRUMS && n.dbl) {
+                p.style = Paint.Style.FILL
+                p.color = 0xFF111111.toInt()
+                p.textAlign = Paint.Align.CENTER
+                p.textSize = r * 0.8f
+                c.drawText("2×", (rf.left + rf.right) / 2, y + r * 0.28f, p)
+            }
             p.alpha = 255
             return
         }
-        val x = laneX(n.fret.toFloat(), pp)
-        val col = FRET_COLORS[n.fret.coerceIn(0, 4)]
-        val isH = idx >= 0 && idx < hopo.size && hopo[idx]
+        val lane = lanes.laneOf(n.fret)
+        if (lane < 0) return
+        val x = laneX(lane.toFloat(), pp)
         p.style = Paint.Style.FILL
+
+        if (md == Mode.DRUMS) {
+            val rr = if (n.ghost) r * 0.75f else r
+            if (n.cymbal) {
+                rf.set(x - rr * 1.15f, y - rr * 0.62f, x + rr * 1.15f, y + rr * 0.62f)
+                p.color = col
+                p.alpha = alpha
+                c.drawOval(rf, p)
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 2.2f * d * s
+                p.color = if (n.accent) 0xFFFFFFFF.toInt() else 0xFF0B0B10.toInt()
+                p.alpha = alpha
+                c.drawOval(rf, p)
+                p.style = Paint.Style.FILL
+                p.color = 0x66FFFFFF
+                c.drawCircle(x, y, rr * 0.22f, p)
+            } else {
+                p.color = col
+                p.alpha = if (n.ghost) min(alpha, 150) else alpha
+                c.drawCircle(x, y, rr, p)
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = (if (n.accent) 3.5f else 2f) * d * s
+                p.color = if (n.accent) 0xFFFFFFFF.toInt() else 0xFF0B0B10.toInt()
+                p.alpha = alpha
+                c.drawCircle(x, y, rr, p)
+            }
+            if (n.accent) {
+                p.style = Paint.Style.FILL
+                p.color = 0xFFFFFFFF.toInt()
+                p.textAlign = Paint.Align.CENTER
+                p.textSize = rr * 0.9f
+                c.drawText(">", x, y + rr * 0.3f, p)
+            }
+            if (sel) {
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 2.5f * d
+                p.color = 0xFFFFFF00.toInt()
+                p.alpha = 255
+                c.drawCircle(x, y, rr + 4 * d * s, p)
+            }
+            p.alpha = 255
+            return
+        }
+
+        val isH = idx >= 0 && idx < hopo.size && hopo[idx]
         if (n.tap) {
             p.color = 0xFF1F1B2E.toInt()
             p.alpha = alpha
@@ -504,16 +608,15 @@ class HighwayView(context: Context) : View(context) {
             c.drawCircle(x, y, r, p)
             p.style = Paint.Style.STROKE
             p.strokeWidth = 2f * d * s
-            p.color = if (isH) 0xFFFFFFFF.toInt() else 0xFF0B0B10.toInt()
+            p.color = if (isH) 0xFFFFFFFF.toInt() else (if (md == Mode.GHL) 0xFF9CA3AF.toInt() else 0xFF0B0B10.toInt())
             p.alpha = alpha
             c.drawCircle(x, y, r, p)
+            p.style = Paint.Style.FILL
             if (isH) {
-                p.style = Paint.Style.FILL
                 p.color = 0xFFFFFFFF.toInt()
                 p.alpha = alpha
                 c.drawCircle(x, y, r * 0.42f, p)
             } else {
-                p.style = Paint.Style.FILL
                 p.color = 0x55FFFFFF
                 c.drawCircle(x, y, r * 0.35f, p)
             }
@@ -535,54 +638,78 @@ class HighwayView(context: Context) : View(context) {
     }
 
     private fun drawStrikeLine(c: Canvas) {
-        val pp = 0.0
-        val s = scaleOfP(pp)
+        val s = scaleOfP(0.0)
         p.style = Paint.Style.STROKE
         p.strokeWidth = 2f * d
         p.color = 0xFFFFFFFF.toInt()
-        c.drawLine(laneX(0f, pp) - laneW * 0.5f, hitY, laneX(4f, pp) + laneW * 0.5f, hitY, p)
-        for (i in 0..4) {
+        c.drawLine(leftEdge(0.0) - 4 * d, hitY, rightEdge(0.0) + 4 * d, hitY, p)
+        for (i in 0 until lanes.count) {
             p.style = Paint.Style.STROKE
             p.strokeWidth = 2.5f * d
-            p.color = FRET_COLORS[i]
-            c.drawCircle(laneX(i.toFloat(), pp), hitY, laneW * 0.40f * s, p)
+            p.color = lanes.color(lanes.frets[i])
+            c.drawCircle(laneX(i.toFloat(), 0.0), hitY, laneW * 0.40f * s * (if (lanes.count > 5) 0.92f else 1f), p)
+        }
+    }
+
+    private fun placementFlags(n: NoteObj) {
+        if (lanes.mode == Mode.DRUMS) {
+            if (n.fret in 2..4) n.cymbal = placeCymbal
+            if (n.fret in 1..5) {
+                n.accent = placeDyn == 1
+                n.ghost = placeDyn == 2
+            }
+            if (n.fret == 0) n.dbl = placeDouble
         }
     }
 
     private fun drawGhost(c: Canvas) {
-        if (!dragging && !isTouching) return
-        if (scrub || multi) return
+        if (!isTouching || scrub || multi) return
         when (tool) {
             T_NOTE -> {
                 val t0 = downTick
                 var t1 = snapTick(tickOfY(curY))
                 if (t1 < t0) t1 = t0
-                val fret = if (openMode) 7 else downLane
-                val ghost = NoteObj(t0, fret, if (dragging) t1 - t0 else 0)
-                p.alpha = 140
-                if (ghost.length > 0) drawSustain(c, ghost, -1e9, curTick + range)
-                drawNote(c, ghost, -1)
-                p.alpha = 255
+                val fret = if (barMode) lanes.barFret else lanes.fretOf(downLane)
+                val len = if (dragging && t1 - t0 >= snapTicks()) t1 - t0 else 0
+                val ghost = NoteObj(t0, fret, len)
+                placementFlags(ghost)
+                if (placeType == 3 && lanes.mode != Mode.DRUMS) ghost.tap = true
+                if (len > 0) drawSustain(c, ghost, -1e9, curTick + range)
+                drawNote(c, ghost, -1, 150)
             }
-            T_STAR -> {
+            T_STAR, T_ROLL -> {
                 val a = min(downTick, snapTick(tickOfY(curY)))
                 val b = max(downTick, snapTick(tickOfY(curY)))
                 val pa = pOfTick(a.toDouble())
                 val pb = pOfTick(b.toDouble())
                 p.style = Paint.Style.FILL
                 p.color = 0x6622D3EE
-                rf.set(laneX(4f, pa) + laneW * 0.5f, yOfP(pb), laneX(4f, pa) + laneW * 0.5f + 12 * d, yOfP(pa))
+                rf.set(rightEdge(pa) + 4 * d, yOfP(pb), rightEdge(pa) + 16 * d, yOfP(pa))
                 c.drawRect(rf, p)
             }
             T_SELECT -> if (dragging) {
-                p.style = Paint.Style.FILL
-                p.color = 0x33FFFF00
-                rf.set(min(downX, curX), min(downY, curY), max(downX, curX), max(downY, curY))
-                c.drawRect(rf, p)
-                p.style = Paint.Style.STROKE
-                p.strokeWidth = 1.5f * d
-                p.color = 0xFFFFFF00.toInt()
-                c.drawRect(rf, p)
+                if (grab) {
+                    val dt = snapTick(tickOfY(curY)) - snapTick(tickOfY(downY))
+                    val dl = laneAt(curX, curY) - downLane
+                    for (n in selection) {
+                        val g = n.copy()
+                        g.tick = max(0, n.tick + dt)
+                        if (n.fret != lanes.barFret) {
+                            val ln = (lanes.laneOf(n.fret) + dl).coerceIn(0, lanes.count - 1)
+                            g.fret = lanes.fretOf(ln)
+                        }
+                        drawNote(c, g, -1, 140)
+                    }
+                } else {
+                    p.style = Paint.Style.FILL
+                    p.color = 0x33FFFF00
+                    rf.set(min(downX, curX), min(downY, curY), max(downX, curX), max(downY, curY))
+                    c.drawRect(rf, p)
+                    p.style = Paint.Style.STROKE
+                    p.strokeWidth = 1.5f * d
+                    p.color = 0xFFFFFF00.toInt()
+                    c.drawRect(rf, p)
+                }
             }
             else -> {
                 if (tool in T_BPM..T_EVENT) {
@@ -590,13 +717,11 @@ class HighwayView(context: Context) : View(context) {
                     p.style = Paint.Style.STROKE
                     p.strokeWidth = 1.5f * d
                     p.color = 0xFFFFFFFF.toInt()
-                    c.drawLine(laneX(0f, 0.3) - laneW, y, laneX(4f, 0.3) + laneW, y, p)
+                    c.drawLine(leftEdge(0.3) - laneW, y, rightEdge(0.3) + laneW, y, p)
                 }
             }
         }
     }
-
-    private var isTouching = false
 
     private fun drawScrub(c: Canvas) {
         val top = 10 * d
@@ -606,7 +731,6 @@ class HighwayView(context: Context) : View(context) {
         rf.set(stripX + 6 * d, top, stripX + 12 * d, bot)
         c.drawRoundRect(rf, 3 * d, 3 * d, p)
         val total = max(1, totalTicks()).toDouble()
-        // penanda section
         p.color = 0xFF059669.toInt()
         for (e in song.events) {
             if (!e.text.startsWith("section ")) continue
@@ -641,6 +765,7 @@ class HighwayView(context: Context) : View(context) {
                 curY = e.y
                 dragging = false
                 multi = false
+                grab = false
                 changedInGesture = false
                 scrub = e.x >= stripX - 4 * d
                 if (scrub) {
@@ -651,19 +776,23 @@ class HighwayView(context: Context) : View(context) {
                 downLane = laneAt(e.x, e.y)
                 lastTickUnderFinger = tickOfY(e.y)
                 if (tool == T_ERASE) eraseAt(e.x, e.y)
+                if (tool == T_SELECT) {
+                    val n = nearestNote(e.x, e.y, 34 * d)
+                    grab = n != null && selection.contains(n)
+                }
                 invalidate()
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 multi = true
                 dragging = false
-                lastFocusY = e.focusYSafe()
+                grab = false
+                lastFocusY = focusY(e)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (multi) {
-                    val fy = e.focusYSafe()
+                    val fy = focusY(e)
                     val dy = fy - lastFocusY
                     lastFocusY = fy
-                    // geser kira-kira satu "jalur" per tinggi layar
                     curTick = curTick + dy * (range / (hitY - topY)) * 0.9
                     return true
                 }
@@ -695,6 +824,7 @@ class HighwayView(context: Context) : View(context) {
                 if (!multi) finishGesture(e.x, e.y)
                 dragging = false
                 multi = false
+                grab = false
                 invalidate()
             }
             MotionEvent.ACTION_CANCEL -> {
@@ -702,24 +832,32 @@ class HighwayView(context: Context) : View(context) {
                 dragging = false
                 multi = false
                 scrub = false
+                grab = false
                 invalidate()
             }
         }
         return true
     }
 
-    private fun MotionEvent.focusYSafe(): Float {
+    private fun focusY(e: MotionEvent): Float {
         var sum = 0f
-        val n = pointerCount
-        for (i in 0 until n) sum += getY(i)
-        return if (n > 0) sum / n else y
+        val n = e.pointerCount
+        for (i in 0 until n) sum += e.getY(i)
+        return if (n > 0) sum / n else e.y
     }
 
     private fun scrubTo(y: Float) {
         val top = 10 * d
         val bot = h() - 10 * d
         val f = ((y - top) / (bot - top)).toDouble().coerceIn(0.0, 1.0)
+        listener?.onUserSeek()
         curTick = f * totalTicks()
+    }
+
+    private fun family(kind: Int) = when (kind) {
+        2 -> 0
+        64 -> 1
+        else -> 2
     }
 
     private fun finishGesture(x: Float, y: Float) {
@@ -729,53 +867,81 @@ class HighwayView(context: Context) : View(context) {
                 var end = snapTick(tickOfY(y))
                 if (end < tick) end = tick
                 val len = if (dragging && end - tick >= snapTicks()) end - tick else 0
-                placeNote(tick, if (openMode) 7 else downLane, len)
+                placeNote(tick, if (barMode) lanes.barFret else lanes.fretOf(downLane), len)
             }
-            T_SELECT -> {
-                if (dragging) {
-                    val r = RectF(min(downX, x), min(downY, y), max(downX, x), max(downY, y))
-                    selection.clear()
-                    forEachVisibleNote { n, nx, ny ->
-                        if (r.contains(nx, ny)) selection.add(n)
-                    }
-                } else {
-                    val n = nearestNote(x, y, 34 * d)
-                    if (n != null) {
-                        if (!selection.remove(n)) selection.add(n)
-                    } else selection.clear()
-                }
-                listener?.onSelectionChanged()
-            }
-            T_STAR -> {
+            T_SELECT -> finishSelect(x, y)
+            T_STAR, T_ROLL -> {
+                val kind = if (tool == T_ROLL) (if (rollDouble) 66 else 65) else (if (fillMode) 64 else 2)
                 val a = downTick
                 val b = snapTick(tickOfY(y))
                 val lo = min(a, b)
                 val hi = max(a, b)
                 val tr = track()
+                val fam = family(kind)
+                beginEdit()
                 if (!dragging || hi - lo < snapTicks()) {
-                    val existing = tr.starpower.firstOrNull { a >= it.tick && a < it.tick + max(it.length, 1) }
-                    beginEdit()
+                    val existing = tr.starpower.firstOrNull { family(it.kind) == fam && a >= it.tick && a < it.tick + max(it.length, 1) }
                     if (existing != null) tr.starpower.remove(existing)
-                    else tr.starpower.add(Phrase(a, song.resolution * 4))
+                    else tr.starpower.add(Phrase(a, song.resolution * 4, kind))
                 } else {
-                    beginEdit()
-                    // hapus phrase yang tumpang tindih
-                    tr.starpower.removeAll { it.tick < hi && it.tick + max(it.length, 1) > lo }
-                    tr.starpower.add(Phrase(lo, hi - lo))
+                    tr.starpower.removeAll { family(it.kind) == fam && it.tick < hi && it.tick + max(it.length, 1) > lo }
+                    tr.starpower.add(Phrase(lo, hi - lo, kind))
                 }
                 commitChange()
             }
             T_BPM, T_TS, T_SECTION, T_EVENT -> {
                 if (!dragging) {
                     val tick = snapTick(tickOfY(y))
-                    listener?.onMarkerTap(tool, tick, findMarker(tool, x, y))
+                    listener?.onMarkerTap(tool, tick, findMarker(tool, y))
                 }
             }
             else -> {}
         }
     }
 
-    private fun findMarker(t: Int, x: Float, y: Float): Int {
+    private fun finishSelect(x: Float, y: Float) {
+        if (grab && dragging) {
+            val dt = snapTick(tickOfY(y)) - snapTick(tickOfY(downY))
+            val dl = laneAt(x, y) - downLane
+            if (dt != 0 || dl != 0) {
+                beginEdit()
+                val minTick = selection.minOf { it.tick }
+                val dtc = max(dt, -minTick)
+                val tr = track()
+                for (n in selection) {
+                    n.tick += dtc
+                    if (n.fret != lanes.barFret) {
+                        val ln = (lanes.laneOf(n.fret) + dl).coerceIn(0, lanes.count - 1)
+                        n.fret = lanes.fretOf(ln)
+                    }
+                }
+                // singkirkan not yang tertimpa
+                val keep = HashSet<String>()
+                val dead = ArrayList<NoteObj>()
+                for (n in selection) keep.add("${n.tick}:${n.fret}")
+                for (n in tr.notes) if (!selection.contains(n) && keep.contains("${n.tick}:${n.fret}")) dead.add(n)
+                tr.notes.removeAll(dead.toSet())
+                commitChange()
+                listener?.onSelectionChanged()
+            }
+            return
+        }
+        if (dragging) {
+            val r = RectF(min(downX, x), min(downY, y), max(downX, x), max(downY, y))
+            selection.clear()
+            forEachVisibleNote { n, nx, ny -> if (r.contains(nx, ny)) selection.add(n) }
+        } else {
+            val n = nearestNote(x, y, 34 * d)
+            if (n != null) {
+                val group = if (chordSelect) track().notes.filter { it.tick == n.tick } else listOf(n)
+                if (selection.contains(n)) selection.removeAll(group.toSet()) else selection.addAll(group)
+            } else selection.clear()
+        }
+        listener?.onSelectionChanged()
+        invalidate()
+    }
+
+    private fun findMarker(t: Int, y: Float): Int {
         var best = -1
         var bd = 22 * d
         fun test(i: Int, tick: Int) {
@@ -802,25 +968,32 @@ class HighwayView(context: Context) : View(context) {
             tr.notes.remove(same)
             selection.remove(same)
         } else {
+            val target: NoteObj
             if (same != null) {
                 same.length = len
-                selection.clear()
-                selection.add(same)
+                target = same
             } else {
-                // not open meniadakan not lain di tick yang sama dan sebaliknya
-                val clash = tr.notes.filter { it.tick == tick && ((fret == 7) != (it.fret == 7)) }
-                tr.notes.removeAll(clash.toSet())
-                selection.removeAll(clash.toSet())
-                val n = NoteObj(tick, fret, len)
-                // warisi flag tap/forced dari not lain di tick yang sama
-                val mate = tr.notes.firstOrNull { it.tick == tick }
-                if (mate != null) {
-                    n.tap = mate.tap
-                    n.forced = mate.forced
+                val bar = lanes.barFret
+                if (lanes.mode != Mode.DRUMS) {
+                    val clash = tr.notes.filter { it.tick == tick && ((fret == bar) != (it.fret == bar)) }
+                    tr.notes.removeAll(clash.toSet())
+                    selection.removeAll(clash.toSet())
                 }
-                tr.notes.add(n)
-                selection.clear()
-                selection.add(n)
+                target = NoteObj(tick, fret, len)
+                placementFlags(target)
+                tr.notes.add(target)
+            }
+            if (!extSustain && len > 0) for (n in tr.notes) if (n.tick == tick) n.length = len
+            selection.clear()
+            selection.add(target)
+            tr.sortAll()
+            if (lanes.mode != Mode.DRUMS && same == null) {
+                if (placeType == 3) {
+                    target.tap = true
+                } else if (placeType == 1 || placeType == 2) {
+                    rebuild()
+                    applyType(listOf(target), placeType)
+                }
             }
         }
         commitChange()
@@ -831,7 +1004,11 @@ class HighwayView(context: Context) : View(context) {
         for (n in track().notes) {
             val pp = pOfTick(n.tick.toDouble())
             if (pp > 1.02 || pp < -0.25) continue
-            val x = if (n.fret == 7) cx else laneX(n.fret.toFloat(), pp)
+            val x = if (n.fret == lanes.barFret) cx else {
+                val ln = lanes.laneOf(n.fret)
+                if (ln < 0) continue
+                laneX(ln.toFloat(), pp)
+            }
             f(n, x, yOfP(pp))
         }
     }
@@ -840,7 +1017,7 @@ class HighwayView(context: Context) : View(context) {
         var best: NoteObj? = null
         var bd = maxDist
         forEachVisibleNote { n, nx, ny ->
-            val dx = if (n.fret == 7) 0f else nx - x
+            val dx = if (n.fret == lanes.barFret) 0f else nx - x
             val dist = Math.hypot(dx.toDouble(), (ny - y).toDouble()).toFloat()
             if (dist < bd) {
                 bd = dist
@@ -875,42 +1052,115 @@ class HighwayView(context: Context) : View(context) {
         listener?.onSelectionChanged()
     }
 
-    fun toggleForced() {
-        if (selection.isEmpty()) return
+    fun selectNone() {
+        selection.clear()
+        invalidate()
+        listener?.onSelectionChanged()
+    }
+
+    fun selectRange(a: Int, b: Int) {
+        selection.clear()
+        for (n in track().notes) if (n.tick >= a && n.tick < b) selection.add(n)
+        invalidate()
+        listener?.onSelectionChanged()
+    }
+
+    /** Pilih semua not di bagian (section) tempat kursor berada. */
+    fun selectSectionAtCursor() {
+        val secs = song.events.filter { it.text.startsWith("section ") }.map { it.tick }.sorted()
+        val cur = curTick.toInt()
+        var start = 0
+        var end = Int.MAX_VALUE
+        for (t in secs) {
+            if (t <= cur) start = t else {
+                end = t
+                break
+            }
+        }
+        selectRange(start, end)
+    }
+
+    private fun applyType(list: List<NoteObj>, type: Int) {
+        val notes = track().notes
+        val nat = Hopo.natural(notes, song.resolution)
+        val index = HashMap<NoteObj, Int>()
+        for ((i, n) in notes.withIndex()) index[n] = i
+        for (n in list) {
+            val i = index[n] ?: continue
+            when (type) {
+                0 -> {
+                    n.tap = false
+                    n.forced = false
+                }
+                1 -> {
+                    n.tap = false
+                    n.forced = nat[i]
+                }
+                2 -> {
+                    n.tap = false
+                    n.forced = !nat[i]
+                }
+                3 -> {
+                    n.tap = true
+                    n.forced = false
+                }
+            }
+        }
+    }
+
+    /** 0 natural, 1 strum, 2 hopo, 3 tap — untuk not terpilih (gitar/GHL). */
+    fun setType(type: Int) {
+        if (selection.isEmpty() || lanes.mode == Mode.DRUMS) return
         listener?.beforeEdit()
-        val setTo = !selection.all { it.forced }
-        for (n in selection) {
-            n.forced = setTo
-            if (setTo) n.tap = false
+        applyType(selection.toList(), type)
+        commitChange()
+    }
+
+    fun toggleCymbal() {
+        if (selection.isEmpty() || lanes.mode != Mode.DRUMS) return
+        listener?.beforeEdit()
+        val cand = selection.filter { it.fret in 2..4 }
+        val to = !cand.all { it.cymbal }
+        for (n in cand) n.cymbal = to
+        commitChange()
+    }
+
+    /** 0 normal, 1 accent, 2 ghost */
+    fun setDynamics(v: Int) {
+        if (selection.isEmpty() || lanes.mode != Mode.DRUMS) return
+        listener?.beforeEdit()
+        for (n in selection) if (n.fret in 1..5) {
+            n.accent = v == 1
+            n.ghost = v == 2
         }
         commitChange()
     }
 
-    fun toggleTap() {
-        if (selection.isEmpty()) return
+    fun toggleDouble() {
+        if (selection.isEmpty() || lanes.mode != Mode.DRUMS) return
         listener?.beforeEdit()
-        val setTo = !selection.all { it.tap }
-        for (n in selection) {
-            n.tap = setTo
-            if (setTo) n.forced = false
-        }
+        val cand = selection.filter { it.fret == 0 }
+        val to = !cand.all { it.dbl }
+        for (n in cand) n.dbl = to
         commitChange()
     }
 
-    /** Ubah panjang sustain semua not terpilih sebesar delta (dalam tick); hasil minimal 0. */
     fun changeSustain(delta: Int) {
         if (selection.isEmpty()) return
         listener?.beforeEdit()
-        for (n in selection) n.length = max(0, n.length + delta)
+        val targets = if (extSustain) selection.toList() else selection.flatMap { s -> track().notes.filter { it.tick == s.tick } }
+        for (n in targets) n.length = max(0, n.length + delta)
         commitChange()
     }
 
-    fun clearSustain() {
+    fun setSustain(len: Int) {
         if (selection.isEmpty()) return
         listener?.beforeEdit()
-        for (n in selection) n.length = 0
+        for (n in selection) n.length = max(0, len)
         commitChange()
     }
+
+    fun clearSustain() = setSustain(0)
 
     fun nudge(deltaTicks: Int) {
         if (selection.isEmpty()) return
@@ -921,7 +1171,6 @@ class HighwayView(context: Context) : View(context) {
         commitChange()
     }
 
-    /** Salin not terpilih; kembalikan daftar salinan relatif terhadap tick terkecil. */
     fun copySelection(): List<NoteObj> {
         if (selection.isEmpty()) return emptyList()
         val base = selection.minOf { it.tick }
@@ -948,6 +1197,18 @@ class HighwayView(context: Context) : View(context) {
         listener?.onSelectionChanged()
     }
 
+    fun mirror() {
+        if (selection.isEmpty() || lanes.mode == Mode.DRUMS) return
+        listener?.beforeEdit()
+        val cnt = lanes.count
+        for (n in selection) {
+            if (n.fret == lanes.barFret) continue
+            val ln = lanes.laneOf(n.fret)
+            if (ln >= 0) n.fret = lanes.fretOf(cnt - 1 - ln)
+        }
+        commitChange()
+    }
+
     fun stepSnap(dir: Int) {
         val s = snapTicks()
         val cur = curTick
@@ -955,19 +1216,26 @@ class HighwayView(context: Context) : View(context) {
         curTick = max(0.0, k * s)
     }
 
-    fun bpmAtCursor(): Int {
-        var m = song.bpms.firstOrNull()?.milli ?: 120000
-        for (b in song.bpms) if (b.tick <= curTick) m = b.milli
-        return m
+    fun moveMeasure(dir: Int) {
+        val res = song.resolution
+        val from = max(0, curTick.toInt() - res * 24)
+        val lines = BeatGrid.lines(song, from, curTick.toInt() + res * 24).filter { it.isMeasure }
+        if (dir > 0) {
+            val t = lines.firstOrNull { it.tick > curTick + 0.5 }
+            curTick = t?.tick?.toDouble() ?: (curTick + res * 4)
+        } else {
+            val t = lines.lastOrNull { it.tick < curTick - 0.5 }
+            curTick = t?.tick?.toDouble() ?: max(0.0, curTick - res * 4)
+        }
     }
 
-    fun tsAtCursor(): TsEv {
-        var t = song.ts.firstOrNull() ?: TsEv(0, 4, 2)
-        for (x in song.ts) if (x.tick <= curTick) t = x
-        return t
+    fun jumpSection(dir: Int) {
+        val secs = song.events.filter { it.text.startsWith("section ") }.map { it.tick }.sorted()
+        val t = if (dir > 0) secs.firstOrNull { it > curTick + 0.5 } else secs.lastOrNull { it < curTick - 0.5 }
+        if (t != null) curTick = t.toDouble() else toast0()
     }
 
-    fun snapTickPublic(t: Double): Int = snapTick(t)
+    private fun toast0() {}
 
     fun bpmAtCursorAt(tick: Int): Int {
         var m = song.bpms.firstOrNull()?.milli ?: 120000
@@ -981,5 +1249,41 @@ class HighwayView(context: Context) : View(context) {
         return t
     }
 
-    fun roundInt(v: Double): Int = v.roundToInt()
+    fun snapTickPublic(t: Double): Int = snapTick(t)
+
+    /** Jumlah not (tick berbeda) yang dilewati kursor antara a (tidak termasuk) dan b (termasuk). */
+    fun notesBetween(a: Double, b: Double): Int {
+        val notes = track().notes
+        var i = lowerBound(notes, Math.floor(a).toInt() + 1)
+        var last = -1
+        var cnt = 0
+        while (i < notes.size && notes[i].tick <= b) {
+            if (notes[i].tick != last) {
+                cnt++
+                last = notes[i].tick
+            }
+            i++
+        }
+        return cnt
+    }
+
+    fun selectionSummary(): String {
+        if (selection.isEmpty()) return "-"
+        if (selection.size == 1) {
+            val n = selection.first()
+            val nm = when {
+                n.fret == lanes.barFret -> if (lanes.mode == Mode.DRUMS) "Kick" else "Open"
+                else -> "Lane ${lanes.laneOf(n.fret) + 1}"
+            }
+            val fl = ArrayList<String>()
+            if (n.tap) fl.add("tap")
+            if (n.forced) fl.add("forced")
+            if (n.cymbal) fl.add("cymbal")
+            if (n.accent) fl.add("accent")
+            if (n.ghost) fl.add("ghost")
+            if (n.dbl) fl.add("2x")
+            return "$nm @${n.tick}\npanjang ${n.length}" + (if (fl.isEmpty()) "" else "\n" + fl.joinToString(","))
+        }
+        return "${selection.size} not"
+    }
 }

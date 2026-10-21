@@ -1,14 +1,12 @@
 # ChartDroid
 
-Editor chart (.chart, Clone Hero) untuk Android dengan tata letak mirip Moonscraper Chart Editor:
-menu atas, kolom alat kiri, highway di tengah, panel tingkat/snap/info di kanan, bar pemutar di bawah.
+Editor chart (.chart / .mid, Clone Hero) untuk Android dengan tata letak mirip Moonscraper Chart Editor.
 
-Fitur: not 5 fret + open, sustain, HOPO/forced, tap, star power, BPM, birama, section, event solo,
-snap 1/1–1/192, undo/redo, salin/tempel, pemutaran audio (kecepatan 0.25x–1.5x), offset audio,
-buka file/folder lagu, simpan, ekspor ke folder Clone Hero (notes.chart + song.ini + audio).
-
-Keterbatasan: belum ada impor .mid; drum/GHL/keys hanya dipertahankan apa adanya (tidak bisa disunting);
-audio satu stem; tanpa waveform dan metronom.
+Fitur: Guitar/Co-op/Bass/Rhythm/Keys (5 lane + open), GHL (6 lane), Drums (4/5 lane, kick, cymbal/tom, accent, ghost,
+kick 2x, roll, fill); sustain, HOPO/forced, tap; star power; BPM (anchor, tap BPM, +/-), birama, section, solo, lirik;
+snap 1/1-1/192; undo/redo; salin/tempel/pindah/cerminkan; pilih chord/section; salin tingkat kesulitan;
+audio multi-stem, kecepatan, offset, kalibrasi, waveform, metronome, clap; validator; impor/ekspor .mid;
+buka folder lagu / ekspor folder Clone Hero (notes.chart + song.ini + audio); autosave; pengaturan.
 
 Terinspirasi dari Moonscraper Chart Editor (c) Alexander Ong, BSD-3-Clause
 (https://github.com/FireFox2000000/moonscraper-chart-editor). ChartDroid bukan produk resmi Moonscraper
