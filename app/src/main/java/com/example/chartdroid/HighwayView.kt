@@ -483,7 +483,7 @@ class HighwayView(context: Context) : View(context) {
         }
         val x = laneX(n.fret.toFloat(), pp)
         val col = FRET_COLORS[n.fret.coerceIn(0, 4)]
-        val isH = idx < hopo.size && hopo[idx]
+        val isH = idx >= 0 && idx < hopo.size && hopo[idx]
         p.style = Paint.Style.FILL
         if (n.tap) {
             p.color = 0xFF1F1B2E.toInt()
