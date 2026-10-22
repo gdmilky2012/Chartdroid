@@ -3,11 +3,13 @@ package com.example.chartdroid
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioTrack
+import android.media.SoundPool
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.nio.ByteOrder
 import kotlin.math.PI
 import kotlin.math.abs
@@ -15,67 +17,70 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.sin
 
-/** Bunyi klik pendek (metronome / clap) yang dibuat sendiri. */
-class Clicker(freq: Double, ms: Int, noise: Boolean, private var volume: Float = 1f) {
-    private var track: AudioTrack? = null
+/** Bunyi klik pendek (metronome / clap) lewat SoundPool: tidak memblokir thread UI. */
+class Clicker(context: Context, name: String, freq: Double, ms: Int, noise: Boolean, private var volume: Float = 1f) {
+    private var pool: SoundPool? = null
+    private var soundId = 0
+    @Volatile
+    private var ready = false
 
     init {
         try {
             val rate = 22050
             val n = rate * ms / 1000
-            val pcm = ShortArray(n)
+            val pcm = ByteArray(n * 2)
             val rnd = java.util.Random(7)
             for (i in 0 until n) {
                 val t = i.toDouble() / rate
                 val env = exp(-t * (if (noise) 60.0 else 45.0))
                 val v = if (noise) (rnd.nextDouble() * 2 - 1) * 0.8 else sin(2 * PI * freq * t)
-                pcm[i] = (v * env * 30000).toInt().toShort()
+                val sv = (v * env * 30000).toInt()
+                pcm[i * 2] = (sv and 0xFF).toByte()
+                pcm[i * 2 + 1] = ((sv shr 8) and 0xFF).toByte()
             }
-            val t = AudioTrack.Builder()
+            val f = File(context.cacheDir, "$name.wav")
+            val o = ByteArrayOutputStream()
+            fun le32(v: Int) {
+                o.write(v and 0xFF); o.write((v shr 8) and 0xFF); o.write((v shr 16) and 0xFF); o.write((v shr 24) and 0xFF)
+            }
+            fun le16(v: Int) {
+                o.write(v and 0xFF); o.write((v shr 8) and 0xFF)
+            }
+            o.write("RIFF".toByteArray()); le32(36 + pcm.size); o.write("WAVE".toByteArray())
+            o.write("fmt ".toByteArray()); le32(16); le16(1); le16(1); le32(rate); le32(rate * 2); le16(2); le16(16)
+            o.write("data".toByteArray()); le32(pcm.size); o.write(pcm)
+            f.writeBytes(o.toByteArray())
+            val sp = SoundPool.Builder().setMaxStreams(4)
                 .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build()
-                )
-                .setBufferSizeInBytes(n * 2)
-                .setTransferMode(AudioTrack.MODE_STATIC)
-                .build()
-            t.write(pcm, 0, n)
-            track = t
+                ).build()
+            sp.setOnLoadCompleteListener { _, _, status -> ready = status == 0 }
+            soundId = sp.load(f.absolutePath, 1)
+            pool = sp
         } catch (e: Exception) {
-            track = null
+            pool = null
         }
     }
 
     fun setVolume(v: Float) {
         volume = v
-        try {
-            track?.setVolume(v)
-        } catch (e: Exception) {
-        }
     }
 
     fun play() {
-        val t = track ?: return
+        if (!ready) return
         try {
-            t.setVolume(volume)
-            t.stop()
-            t.setPlaybackHeadPosition(0)
-            t.play()
+            pool?.play(soundId, volume, volume, 1, 0, 1f)
         } catch (e: Exception) {
         }
     }
 
     fun release() {
         try {
-            track?.release()
+            pool?.release()
         } catch (e: Exception) {
         }
-        track = null
+        pool = null
     }
 }
 

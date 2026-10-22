@@ -81,9 +81,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private var setClickVol = 70
     private var setCalib = 0
     private var panelVisible = true
+    private var setLefty = false
 
     // ----- tampilan -----
-    private val toolButtons = HashMap<Int, TextView>()
+    private val toolButtons = HashMap<Int, View>()
     private lateinit var diffChip: TextView
     private lateinit var instChip: TextView
     private lateinit var snapText: TextView
@@ -91,10 +92,12 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private lateinit var selText: TextView
     private lateinit var timeText: TextView
     private lateinit var titleText: TextView
-    private lateinit var playBtn: TextView
+    private lateinit var playBtn: IconView
     private lateinit var speedBtn: TextView
-    private lateinit var metBtn: TextView
-    private lateinit var clapBtn: TextView
+    private lateinit var metBtn: View
+    private lateinit var clapBtn: View
+    private lateinit var liveRow: LinearLayout
+    private var lastUi = 0L
     private lateinit var rightPanel: View
     private lateinit var guitarPlace: LinearLayout
     private lateinit var drumPlace: LinearLayout
@@ -184,9 +187,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             false
         }
 
-        metronomeHi = Clicker(1800.0, 50, false)
-        metronomeLo = Clicker(1100.0, 50, false)
-        clap = Clicker(0.0, 80, true)
+        metronomeHi = Clicker(this, "met_hi", 1800.0, 50, false)
+        metronomeLo = Clicker(this, "met_lo", 1100.0, 50, false)
+        clap = Clicker(this, "clap", 0.0, 80, true)
 
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
@@ -195,7 +198,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
 
         val mid = LinearLayout(this)
         mid.orientation = LinearLayout.HORIZONTAL
-        mid.addView(buildToolColumn(), LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.MATCH_PARENT))
+        mid.addView(buildToolColumn(), LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.MATCH_PARENT))
         mid.addView(highway, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
         rightPanel = buildRightPanel()
         mid.addView(rightPanel, LinearLayout.LayoutParams(dp(176), ViewGroup.LayoutParams.MATCH_PARENT))
@@ -240,6 +243,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         setClickVol = p.getInt("clickvol", 70)
         setCalib = p.getInt("calib", 0)
         panelVisible = p.getBoolean("panel", true)
+        setLefty = p.getBoolean("lefty", false)
     }
 
     private fun savePrefs() {
@@ -247,7 +251,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             .putBoolean("metronome", setMetronome).putBoolean("clap", setClap).putBoolean("wave", setWave)
             .putBoolean("view3d", set3D).putBoolean("ext", setExt).putBoolean("chord", setChord)
             .putBoolean("drum5", setDrum5).putInt("vol", setVolume).putInt("clickvol", setClickVol)
-            .putInt("calib", setCalib).putBoolean("panel", panelVisible).apply()
+            .putInt("calib", setCalib).putBoolean("panel", panelVisible).putBoolean("lefty", setLefty).apply()
     }
 
     private fun applySettingsToView() {
@@ -256,6 +260,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         highway.chordSelect = setChord
         highway.drum5Pref = setDrum5
         highway.showWave = setWave
+        highway.lefty = setLefty
         val cv = setClickVol / 100f
         metronomeHi?.setVolume(cv)
         metronomeLo?.setVolume(cv)
@@ -295,6 +300,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         check("Extended sustains (tiap not dalam chord punya panjang sendiri)", setExt) { setExt = it }
         check("Pilih seluruh chord saat mengetuk not (Chord select)", setChord) { setChord = it }
         check("Drum 5 lane (jika kosong, otomatis dari isi chart)", setDrum5) { setDrum5 = it }
+        check("Mode kidal (jalur dibalik kiri-kanan)", setLefty) { setLefty = it }
         fun slider(t: String, v: Int, f: (Int) -> Unit) {
             val tv = TextView(this)
             tv.text = "$t: $v%"
@@ -355,6 +361,14 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         return t
     }
 
+    private fun ibtn(kind: Int, onClick: (View) -> Unit): IconView {
+        val v = IconView(this, kind)
+        v.background = bg(cBtn)
+        v.isClickable = true
+        v.setOnClickListener { onClick(it) }
+        return v
+    }
+
     private fun label(text: String): TextView {
         val t = TextView(this)
         t.text = text
@@ -402,9 +416,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         instChip = btn("Guitar ▾", 12f) { showInstMenu(it) }
         bar.addView(diffChip, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
         bar.addView(instChip, lp(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
-        bar.addView(btn("↶", 15f) { undo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
-        bar.addView(btn("↷", 15f) { redo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
-        bar.addView(btn("💾", 14f) { saveChart() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(ibtn(IconView.UNDO) { undo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(ibtn(IconView.REDO) { redo() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
+        bar.addView(ibtn(IconView.SAVE) { saveChart() }, lp(dp(38), ViewGroup.LayoutParams.MATCH_PARENT, 0f, 3))
         return bar
     }
 
@@ -415,31 +429,34 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         col.orientation = LinearLayout.VERTICAL
         col.setPadding(dp(3), dp(3), dp(3), dp(3))
         val defs = listOf(
-            Triple(HighwayView.T_PAN, "✋", "Geser (Pan)"),
-            Triple(HighwayView.T_SELECT, "↖", "Pilih (Cursor)"),
-            Triple(HighwayView.T_ERASE, "⌫", "Hapus (Eraser)"),
-            Triple(HighwayView.T_NOTE, "●", "Not (Note)"),
-            Triple(HighwayView.T_STAR, "★", "Star Power / Fill"),
-            Triple(HighwayView.T_ROLL, "≋", "Drum Roll"),
-            Triple(HighwayView.T_BPM, "♩", "BPM"),
-            Triple(HighwayView.T_TS, "4/4", "Time Signature"),
-            Triple(HighwayView.T_SECTION, "§", "Section / Lirik"),
-            Triple(HighwayView.T_EVENT, "⚑", "Event (solo)")
+            Triple(HighwayView.T_PAN, IconView.PAN, "Geser"),
+            Triple(HighwayView.T_SELECT, IconView.CURSOR, "Pilih"),
+            Triple(HighwayView.T_ERASE, IconView.ERASER, "Hapus"),
+            Triple(HighwayView.T_NOTE, IconView.NOTE, "Not"),
+            Triple(HighwayView.T_STAR, IconView.STAR, "Star Power"),
+            Triple(HighwayView.T_ROLL, IconView.ROLL, "Drum Roll"),
+            Triple(HighwayView.T_BPM, IconView.BPM, "BPM"),
+            Triple(HighwayView.T_TS, IconView.TS, "Birama"),
+            Triple(HighwayView.T_SECTION, IconView.SECTION, "Section"),
+            Triple(HighwayView.T_EVENT, IconView.EVENT, "Event")
         )
-        var row: LinearLayout? = null
-        for ((i, def) in defs.withIndex()) {
-            if (i % 2 == 0) {
-                row = LinearLayout(this)
-                row.orientation = LinearLayout.HORIZONTAL
-                col.addView(row)
-            }
-            val b = btn(def.second, if (def.second.length > 1) 12f else 18f) { selectTool(def.first) }
-            b.setOnLongClickListener {
-                toast(def.third)
-                true
-            }
-            toolButtons[def.first] = b
-            row!!.addView(b, lp(dp(40), dp(40), 0f, 2))
+        for (def in defs) {
+            val row = LinearLayout(this)
+            row.orientation = LinearLayout.HORIZONTAL
+            row.gravity = Gravity.CENTER_VERTICAL
+            row.setPadding(dp(4), 0, dp(4), 0)
+            row.isClickable = true
+            row.setOnClickListener { selectTool(def.first) }
+            row.addView(IconView(this, def.second), LinearLayout.LayoutParams(dp(28), dp(28)))
+            val t = TextView(this)
+            t.text = def.third
+            t.textSize = 12f
+            t.setTextColor(Color.WHITE)
+            t.setPadding(dp(6), 0, 0, 0)
+            t.maxLines = 1
+            row.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            toolButtons[def.first] = row
+            col.addView(row, lp(ViewGroup.LayoutParams.MATCH_PARENT, dp(34), 0f, 1))
         }
         sv.addView(col)
         return sv
@@ -481,6 +498,11 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         sr.addView(snapText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         sr.addView(btn("+", 16f) { changeSnap(1) }, lp(dp(40), dp(36), 0f, 1))
         col.addView(sr)
+
+        col.addView(label("TARUH DI KURSOR"))
+        liveRow = LinearLayout(this)
+        liveRow.orientation = LinearLayout.HORIZONTAL
+        col.addView(liveRow, LinearLayout.LayoutParams(full, dp(40)))
 
         // ---- tipe not baru (placement) ----
         col.addView(label("TIPE NOT BARU"))
@@ -582,24 +604,24 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         bar.gravity = Gravity.CENTER_VERTICAL
         bar.setPadding(dp(4), 0, dp(4), 0)
         val h = ViewGroup.LayoutParams.MATCH_PARENT
-        bar.addView(btn("⏮", 15f) { pausePlayback(); highway.curTick = 0.0 }, lp(dp(40), h, 0f, 2))
-        bar.addView(btn("⏪", 15f) { pausePlayback(); highway.moveMeasure(-1) }, lp(dp(40), h, 0f, 2))
-        bar.addView(btn("◀", 14f) { pausePlayback(); highway.stepSnap(-1) }, lp(dp(40), h, 0f, 2))
-        playBtn = btn("▶", 18f) { togglePlay() }
+        bar.addView(ibtn(IconView.TO_START) { pausePlayback(); highway.goToTick(0) }, lp(dp(40), h, 0f, 2))
+        bar.addView(ibtn(IconView.PREV_MEASURE) { pausePlayback(); highway.moveMeasure(-1) }, lp(dp(40), h, 0f, 2))
+        bar.addView(ibtn(IconView.STEP_BACK) { pausePlayback(); highway.stepSnap(-1) }, lp(dp(40), h, 0f, 2))
+        playBtn = ibtn(IconView.PLAY) { togglePlay() }
         bar.addView(playBtn, lp(dp(56), h, 0f, 2))
-        bar.addView(btn("▶", 14f) { pausePlayback(); highway.stepSnap(1) }, lp(dp(40), h, 0f, 2))
-        bar.addView(btn("⏩", 15f) { pausePlayback(); highway.moveMeasure(1) }, lp(dp(40), h, 0f, 2))
+        bar.addView(ibtn(IconView.STEP_FWD) { pausePlayback(); highway.stepSnap(1) }, lp(dp(40), h, 0f, 2))
+        bar.addView(ibtn(IconView.NEXT_MEASURE) { pausePlayback(); highway.moveMeasure(1) }, lp(dp(40), h, 0f, 2))
         timeText = TextView(this)
         timeText.setTextColor(Color.WHITE)
         timeText.textSize = 13f
         timeText.typeface = Typeface.MONOSPACE
         timeText.gravity = Gravity.CENTER
         bar.addView(timeText, LinearLayout.LayoutParams(0, h, 1f))
-        metBtn = btn("🔔", 14f) {
+        metBtn = ibtn(IconView.METRO) {
             setMetronome = !setMetronome
             applySettingsToView()
         }
-        clapBtn = btn("👏", 14f) {
+        clapBtn = ibtn(IconView.CLAP) {
             setClap = !setClap
             applySettingsToView()
         }
@@ -607,9 +629,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         bar.addView(clapBtn, lp(dp(40), h, 0f, 2))
         speedBtn = btn("1.0x", 12f) { cycleSpeed() }
         bar.addView(speedBtn, lp(dp(48), h, 0f, 2))
-        bar.addView(btn("−", 16f) { highway.range = highway.range * 1.35 }, lp(dp(38), h, 0f, 2))
-        bar.addView(btn("+", 16f) { highway.range = highway.range / 1.35 }, lp(dp(38), h, 0f, 2))
-        bar.addView(btn("☰", 15f) {
+        bar.addView(ibtn(IconView.ZOOM_OUT) { highway.range = highway.range * 1.35 }, lp(dp(38), h, 0f, 2))
+        bar.addView(ibtn(IconView.ZOOM_IN) { highway.range = highway.range / 1.35 }, lp(dp(38), h, 0f, 2))
+        bar.addView(ibtn(IconView.PANEL) {
             panelVisible = !panelVisible
             applySettingsToView()
         }, lp(dp(38), h, 0f, 2))
@@ -630,7 +652,25 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         guitarSel.visibility = if (drums) View.GONE else View.VISIBLE
         drumPlace.visibility = if (drums) View.VISIBLE else View.GONE
         drumSel.visibility = if (drums) View.VISIBLE else View.GONE
-        barBtn.text = if (highway.mode() == Mode.GHL || true) "Open (bar)" else ""
+        barBtn.text = "Open (bar)"
+        liveRow.removeAllViews()
+        val ln = highway.lanes
+        for (i in 0 until ln.count) {
+            val b = TextView(this)
+            b.background = bg(ln.color(ln.frets[i]), 5)
+            b.isClickable = true
+            b.setOnClickListener { highway.placeAtCursor(i) }
+            liveRow.addView(b, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f, 1))
+        }
+        val bb = TextView(this)
+        bb.text = if (ln.mode == Mode.DRUMS) "K" else "O"
+        bb.textSize = 11f
+        bb.gravity = Gravity.CENTER
+        bb.setTextColor(Color.BLACK)
+        bb.background = bg(ln.color(ln.barFret), 5)
+        bb.isClickable = true
+        bb.setOnClickListener { highway.placeAtCursor(-1) }
+        liveRow.addView(bb, lp(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f, 1))
     }
 
     // ===================== menu =====================
@@ -659,6 +699,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Geser terpilih ▲ (1 snap)" to { highway.nudge(highway.snapTicks()) },
                 "Geser terpilih ▼ (1 snap)" to { highway.nudge(-highway.snapTicks()) },
                 "Cerminkan lane terpilih" to { highway.mirror() },
+                "Geser lane ke kiri" to { highway.shiftLanes(-1) },
+                "Geser lane ke kanan" to { highway.shiftLanes(1) },
+                "Kuantisasi terpilih ke snap" to { highway.quantize() },
+                "Duplikat setelah terpilih" to { highway.duplicate() },
                 "Salin dari tingkat lain…" to { copyFromDifficulty() },
                 "Kosongkan track ini…" to { confirm("Kosongkan semua not di track ini?") { clearTrack() } },
                 "BPM +1 di kursor" to { bumpBpm(1000) },
@@ -694,6 +738,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Tap BPM…" to { tapBpm() },
                 "Ketuk lirik (stempel)…" to { lyricStamp() },
                 "Daftar event global…" to { eventList() },
+                "Statistik chart…" to { showStats() },
+                "Pergi ke…" to { goToDialog() },
+                "Daftar section…" to { sectionList() },
                 "Resolusi chart…" to { toast("Resolusi: ${song.resolution} tick per ketukan") }
             )
             "Options" -> listOf(
@@ -1588,14 +1635,19 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         audioStarted = false
         lastTick = highway.curTick
         playing = true
-        playBtn.text = "⏸"
+        highway.glow = true
+        playBtn.kind = IconView.PAUSE
+        playBtn.invalidate()
         highway.postOnAnimation(frame)
     }
 
     private fun pausePlayback() {
         if (!playing) return
         playing = false
-        playBtn.text = "▶"
+        highway.glow = false
+        updateInfo(true)
+        playBtn.kind = IconView.PLAY
+        playBtn.invalidate()
         for (s in stems) try {
             if (s.player.isPlaying) s.player.pause()
         } catch (e: Exception) {
@@ -1646,24 +1698,41 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     }
 
     // ===================== info =====================
-    private fun updateInfo() {
+    private var lastInfoText = ""
+    private var lastSelText = ""
+
+    private fun updateInfo(force: Boolean = false) {
         if (!::infoText.isInitialized) return
+        if (playing && !force) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastUi < 90) return
+            lastUi = now
+        }
         val tick = highway.curTick
         val sec = highway.tempo.tickToSec(tick)
         val tr = highway.track()
         val a = highway.bpmAtCursorAt(tick.toInt())
         val ts = highway.tsAtCursorAt(tick.toInt())
-        infoText.text = "Tick  ${tick.toInt()}\n" +
+        val infoStr = "Tick  ${tick.toInt()}\n" +
             "BPM   ${ChartIO.bpmText(a)}\n" +
             "TS    ${ts.num}/${1 shl ts.denExp}\n" +
             "Not   ${tr.notes.size}\n" +
             "SP    ${tr.starpower.count { it.kind == 2 }}\n" +
             "Res   ${song.resolution}"
-        selText.text = highway.selectionSummary()
+        if (infoStr != lastInfoText) {
+            lastInfoText = infoStr
+            infoText.text = infoStr
+        }
+        val ss0 = highway.selectionSummary()
+        if (ss0 != lastSelText) {
+            lastSelText = ss0
+            selText.text = ss0
+        }
         val m = max(0.0, sec)
         val mm = (m / 60).toInt()
         val ss = m - mm * 60
-        timeText.text = String.format(java.util.Locale.US, "%02d:%06.3f", mm, ss)
+        val tstr = String.format(java.util.Locale.US, "%02d:%06.3f", mm, ss)
+        if (timeText.text.toString() != tstr) timeText.text = tstr
     }
 
     // ===================== dialog =====================
@@ -1704,6 +1773,50 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     updateInfo()
                 }
             }.show()
+    }
+
+    private fun showStats() {
+        val tv = TextView(this)
+        tv.text = highway.stats()
+        tv.textSize = 13f
+        tv.typeface = Typeface.MONOSPACE
+        tv.setPadding(dp(20), dp(10), dp(20), dp(10))
+        AlertDialog.Builder(this).setTitle("Statistik ${ChartIO.difficulties[diffIdx]} ${ChartIO.instruments[inst] ?: inst}")
+            .setView(tv).setPositiveButton("Tutup", null).show()
+    }
+
+    private fun goToDialog() {
+        form(
+            "Pergi ke…",
+            listOf("Tick" to "", "atau Birama ke-" to "", "atau Waktu (detik)" to ""),
+            listOf(InputType.TYPE_CLASS_NUMBER, InputType.TYPE_CLASS_NUMBER, InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL),
+            null, null
+        ) { v ->
+            pausePlayback()
+            val tick = v[0].toIntOrNull()
+            val measure = v[1].toIntOrNull()
+            val sec = v[2].replace(',', '.').toDoubleOrNull()
+            if (tick != null) highway.goToTick(tick)
+            else if (measure != null) {
+                val res = song.resolution
+                val lines = BeatGrid.lines(song, 0, max(res * 4 * (measure + 4) * 2, res * 64)).filter { it.isMeasure && it.measureNo == measure }
+                if (lines.isNotEmpty()) highway.goToTick(lines[0].tick) else toast("Birama tidak ditemukan")
+            } else if (sec != null) highway.goToTick(highway.tempo.secToTick(sec).toInt())
+        }
+    }
+
+    private fun sectionList() {
+        val secs = song.events.filter { it.text.startsWith("section ") }.sortedBy { it.tick }
+        if (secs.isEmpty()) {
+            toast("Belum ada section")
+            return
+        }
+        val names = secs.map { it.text.substring(8) }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Loncat ke section")
+            .setItems(names) { _, i ->
+                pausePlayback()
+                highway.goToTick(secs[i].tick)
+            }.setNegativeButton("Tutup", null).show()
     }
 
     private fun validate() {

@@ -72,6 +72,12 @@ class HighwayView(context: Context) : View(context) {
     var fillMode = false    // alat Star Power membuat drum fill
     var rollDouble = false  // alat roll membuat roll ganda
     var chordSelect = true
+    var lefty = false
+        set(v) {
+            field = v
+            invalidate()
+        }
+    var glow = false
     var extSustain = true
     var view3D = true
         set(v) {
@@ -210,17 +216,21 @@ class HighwayView(context: Context) : View(context) {
 
     private fun tickOfY(y: Float): Double = curTick + zOfP(pOfY(y)) * range
 
-    private fun laneX(lane: Float, pp: Double): Float = cx + (lane - (lanes.count - 1) / 2f) * laneW * scaleOfP(pp)
+    private fun laneX(lane: Float, pp: Double): Float {
+        val l = if (lefty) (lanes.count - 1) - lane else lane
+        return cx + (l - (lanes.count - 1) / 2f) * laneW * scaleOfP(pp)
+    }
 
-    private fun leftEdge(pp: Double): Float = laneX(0f, pp) - laneW * 0.5f * scaleOfP(pp)
+    private fun leftEdge(pp: Double): Float = cx - lanes.count * laneW * 0.5f * scaleOfP(pp)
 
-    private fun rightEdge(pp: Double): Float = laneX((lanes.count - 1).toFloat(), pp) + laneW * 0.5f * scaleOfP(pp)
+    private fun rightEdge(pp: Double): Float = cx + lanes.count * laneW * 0.5f * scaleOfP(pp)
 
     private fun laneAt(x: Float, y: Float): Int {
         val pp = pOfY(y)
         val s = scaleOfP(pp)
         val l = ((x - cx) / (laneW * s) + (lanes.count - 1) / 2f + 0.5f)
-        return floorI(l).coerceIn(0, lanes.count - 1)
+        val i = floorI(l).coerceIn(0, lanes.count - 1)
+        return if (lefty) lanes.count - 1 - i else i
     }
 
     private fun floorI(v: Float): Int = if (v >= 0) v.toInt() else (v.toInt() - 1)
@@ -643,6 +653,26 @@ class HighwayView(context: Context) : View(context) {
         p.strokeWidth = 2f * d
         p.color = 0xFFFFFFFF.toInt()
         c.drawLine(leftEdge(0.0) - 4 * d, hitY, rightEdge(0.0) + 4 * d, hitY, p)
+        if (glow) {
+            val notes = track().notes
+            var gi = lowerBound(notes, (curTick - song.resolution / 5).toInt())
+            while (gi < notes.size && notes[gi].tick <= curTick) {
+                val n = notes[gi]
+                val age = ((curTick - n.tick) / (song.resolution / 5.0)).coerceIn(0.0, 1.0)
+                val ln = lanes.laneOf(n.fret)
+                p.style = Paint.Style.FILL
+                p.color = lanes.color(n.fret)
+                p.alpha = (200 * (1.0 - age)).toInt()
+                if (n.fret == lanes.barFret) {
+                    rf.set(leftEdge(0.0), hitY - 6 * d, rightEdge(0.0), hitY + 6 * d)
+                    c.drawRoundRect(rf, 6 * d, 6 * d, p)
+                } else if (ln >= 0) {
+                    c.drawCircle(laneX(ln.toFloat(), 0.0), hitY, laneW * 0.55f * (1f + age.toFloat() * 0.5f), p)
+                }
+                p.alpha = 255
+                gi++
+            }
+        }
         for (i in 0 until lanes.count) {
             p.style = Paint.Style.STROKE
             p.strokeWidth = 2.5f * d
@@ -1207,6 +1237,92 @@ class HighwayView(context: Context) : View(context) {
             if (ln >= 0) n.fret = lanes.fretOf(cnt - 1 - ln)
         }
         commitChange()
+    }
+
+    /** Taruh / hapus not di posisi kursor pada jalur ke-lane (-1 = bar open/kick). */
+    fun placeAtCursor(lane: Int) {
+        val fret = if (lane < 0) lanes.barFret else lanes.fretOf(lane)
+        changedInGesture = false
+        placeNote(snapTick(curTick), fret, 0)
+        changedInGesture = false
+    }
+
+    fun quantize() {
+        if (selection.isEmpty()) return
+        listener?.beforeEdit()
+        for (n in selection) n.tick = snapTick(n.tick.toDouble())
+        commitChange()
+    }
+
+    fun duplicate() {
+        if (selection.isEmpty()) return
+        val clip = copySelection()
+        val at = selection.maxOf { it.tick } + snapTicks()
+        paste(clip, at)
+    }
+
+    fun shiftLanes(dir: Int) {
+        if (selection.isEmpty()) return
+        val cand = selection.filter { it.fret != lanes.barFret }
+        for (n in cand) {
+            val ln = lanes.laneOf(n.fret) + dir
+            if (ln < 0 || ln >= lanes.count) return
+        }
+        listener?.beforeEdit()
+        for (n in cand) n.fret = lanes.fretOf(lanes.laneOf(n.fret) + dir)
+        commitChange()
+    }
+
+    fun stats(): String {
+        val notes = track().notes
+        if (notes.isEmpty()) return "Track ini kosong."
+        var chords = 0
+        var maxChord = 0
+        var sust = 0
+        var i = 0
+        val ticks = ArrayList<Int>()
+        while (i < notes.size) {
+            var j = i
+            while (j < notes.size && notes[j].tick == notes[i].tick) j++
+            ticks.add(notes[i].tick)
+            if (j - i > 1) chords++
+            if (j - i > maxChord) maxChord = j - i
+            i = j
+        }
+        for (n in notes) if (n.length > 0) sust++
+        val hop = hopo.count { it }
+        val taps = notes.count { it.tap }
+        val firstSec = tempo.tickToSec(ticks.first().toDouble())
+        val lastSec = tempo.tickToSec(ticks.last().toDouble())
+        val dur = max(0.001, lastSec - firstSec)
+        var maxNps = 0
+        var a = 0
+        val secs = ticks.map { tempo.tickToSec(it.toDouble()) }
+        for (b in secs.indices) {
+            while (secs[b] - secs[a] > 1.0) a++
+            if (b - a + 1 > maxNps) maxNps = b - a + 1
+        }
+        val sb = StringBuilder()
+        sb.append("Not: ${notes.size}\n")
+        sb.append("Posisi unik (tick): ${ticks.size}\n")
+        sb.append("Chord: $chords (terbesar $maxChord not)\n")
+        sb.append("Sustain: $sust\n")
+        if (lanes.mode != Mode.DRUMS) sb.append("HOPO: $hop   Tap: $taps\n")
+        sb.append("Star power: ${track().starpower.count { it.kind == 2 }}\n")
+        if (lanes.mode == Mode.DRUMS) {
+            sb.append("Fill: ${track().starpower.count { it.kind == 64 }}   Roll: ${track().starpower.count { it.kind >= 65 }}\n")
+            sb.append("Cymbal: ${notes.count { it.cymbal }}  Accent: ${notes.count { it.accent }}  Ghost: ${notes.count { it.ghost }}\n")
+        }
+        sb.append(String.format(java.util.Locale.US, "Durasi chart: %.1f detik\n", dur))
+        sb.append(String.format(java.util.Locale.US, "Not/detik rata-rata: %.2f\n", ticks.size / dur))
+        sb.append("Not/detik puncak: $maxNps\n")
+        return sb.toString()
+    }
+
+    /** Pindah kursor ke tick tertentu. */
+    fun goToTick(t: Int) {
+        listener?.onUserSeek()
+        curTick = max(0, t).toDouble()
     }
 
     fun stepSnap(dir: Int) {
