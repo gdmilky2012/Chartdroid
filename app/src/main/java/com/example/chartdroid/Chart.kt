@@ -66,6 +66,8 @@ class Track {
 
 class Song {
     val meta = LinkedHashMap<String, String>()
+    /** Isi song.ini (tag Clone Hero); tidak disimpan di .chart. */
+    val ini = LinkedHashMap<String, String>()
     var resolution = 192
     val bpms = ArrayList<BpmEv>()
     val ts = ArrayList<TsEv>()

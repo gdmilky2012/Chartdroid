@@ -78,6 +78,8 @@ class HighwayView(context: Context) : View(context) {
             invalidate()
         }
     var glow = false
+    var loopA = -1
+    var loopB = -1
     var extSustain = true
     var view3D = true
         set(v) {
@@ -272,6 +274,7 @@ class HighwayView(context: Context) : View(context) {
         drawBeatLines(c)
         drawPhraseBands(c)
         drawMarkers(c)
+        drawLoop(c)
         drawStarpower(c)
         drawNotes(c)
         drawStrikeLine(c)
@@ -432,6 +435,37 @@ class HighwayView(context: Context) : View(context) {
             c.drawRoundRect(rf, 4 * d, 4 * d, p)
             p.color = 0xFFFFFFFF.toInt()
             c.drawText(e.text, x + 6 * d, y + 4 * d, p)
+        }
+    }
+
+    private fun drawLoop(c: Canvas) {
+        val lo = tickAtBottom()
+        val hi = curTick + range
+        if (loopA >= 0 && loopB > loopA && loopB >= lo && loopA <= hi) {
+            val p0 = pOfTick(max(loopA.toDouble(), lo)).coerceAtLeast(-0.2)
+            val p1 = pOfTick(min(loopB.toDouble(), hi)).coerceAtMost(1.0)
+            path.reset()
+            path.moveTo(leftEdge(p0), yOfP(p0))
+            path.lineTo(rightEdge(p0), yOfP(p0))
+            path.lineTo(rightEdge(p1), yOfP(p1))
+            path.lineTo(leftEdge(p1), yOfP(p1))
+            path.close()
+            p.style = Paint.Style.FILL
+            p.color = 0x22FACC15
+            c.drawPath(path, p)
+        }
+        p.textSize = 11f * d
+        p.textAlign = Paint.Align.LEFT
+        for ((t, nm) in listOf(loopA to "A", loopB to "B")) {
+            if (t < 0 || t < lo || t > hi) continue
+            val pp = pOfTick(t.toDouble())
+            val y = yOfP(pp)
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = 2f * d
+            p.color = 0xFFFACC15.toInt()
+            c.drawLine(leftEdge(pp), y, rightEdge(pp), y, p)
+            p.style = Paint.Style.FILL
+            c.drawText(nm, rightEdge(pp) + 4 * d, y + 4 * d, p)
         }
     }
 
@@ -1323,6 +1357,66 @@ class HighwayView(context: Context) : View(context) {
     fun goToTick(t: Int) {
         listener?.onUserSeek()
         curTick = max(0, t).toDouble()
+    }
+
+    /** Potong sustain yang menabrak not berikutnya (sisakan jeda kecil). */
+    fun trimSustains(): Int {
+        val notes = track().notes
+        val gap = max(1, song.resolution / 16)
+        var changed = 0
+        val ticks = notes.map { it.tick }.distinct().sorted()
+        listener?.beforeEdit()
+        for (n in notes) {
+            if (n.length <= 0) continue
+            var nx = -1
+            for (t in ticks) if (t > n.tick) {
+                nx = t
+                break
+            }
+            if (nx < 0) continue
+            if (n.tick + n.length > nx - gap) {
+                val nl = nx - gap - n.tick
+                n.length = if (nl > 0) nl else 0
+                changed++
+            }
+        }
+        commitChange()
+        return changed
+    }
+
+    /** Hapus sustain yang lebih pendek dari ambang (default 1/3 ketukan). */
+    fun removeShortSustains(): Int {
+        val th = song.resolution / 3
+        var changed = 0
+        listener?.beforeEdit()
+        for (n in track().notes) if (n.length in 1 until th) {
+            n.length = 0
+            changed++
+        }
+        commitChange()
+        return changed
+    }
+
+    /** kind: 0 = lane (arg), 1 hopo, 2 tap, 3 chord, 4 sustain, 5 cymbal, 6 forced. */
+    fun selectBy(kind: Int, arg: Int = 0) {
+        selection.clear()
+        val notes = track().notes
+        val hop = hopo
+        for ((i, n) in notes.withIndex()) {
+            val ok = when (kind) {
+                0 -> if (arg < 0) n.fret == lanes.barFret else lanes.laneOf(n.fret) == arg
+                1 -> i < hop.size && hop[i]
+                2 -> n.tap
+                3 -> notes.count { it.tick == n.tick } > 1
+                4 -> n.length > 0
+                5 -> n.cymbal
+                6 -> n.forced
+                else -> false
+            }
+            if (ok) selection.add(n)
+        }
+        invalidate()
+        listener?.onSelectionChanged()
     }
 
     fun stepSnap(dir: Int) {

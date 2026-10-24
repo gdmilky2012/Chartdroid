@@ -98,6 +98,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private lateinit var clapBtn: View
     private lateinit var liveRow: LinearLayout
     private var lastUi = 0L
+    private var loopOn = false
     private lateinit var rightPanel: View
     private lateinit var guitarPlace: LinearLayout
     private lateinit var drumPlace: LinearLayout
@@ -154,6 +155,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 }
                 RQ_SAVE_AS -> {
                     chartUri = uri
+                    rememberRecent(uri)
                     saveChart()
                 }
                 RQ_EXPORT -> exportFolder(uri)
@@ -213,6 +215,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         updateInfo()
         goImmersive()
         toast("Bantuan > Panduan menjelaskan semua alat")
+        handleViewIntent(intent)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -680,6 +683,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Baru…" to { newChart() },
                 "Buka chart (.chart / .mid)…" to { launchOpen(RQ_OPEN_CHART) },
                 "Buka folder lagu (chart + audio)…" to { launchTree(RQ_OPEN_FOLDER) },
+                "Buka terakhir" to { openRecent() },
                 "Simpan" to { saveChart() },
                 "Simpan sebagai…" to { saveAs() },
                 "Ekspor .mid…" to { exportMid() },
@@ -707,7 +711,10 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Kosongkan track ini…" to { confirm("Kosongkan semua not di track ini?") { clearTrack() } },
                 "BPM +1 di kursor" to { bumpBpm(1000) },
                 "BPM −1 di kursor" to { bumpBpm(-1000) },
-                "Anchor BPM di kursor (on/off)" to { toggleAnchor() }
+                "Anchor BPM di kursor (on/off)" to { toggleAnchor() },
+                "Pilih semua berdasarkan…" to { selectByDialog() },
+                "Potong sustain yang menabrak not berikutnya" to { toast("${highway.trimSustains()} sustain dipotong") },
+                "Hapus sustain terlalu pendek" to { toast("${highway.removeShortSustains()} sustain dihapus") }
             )
             "View" -> listOf(
                 "Zoom +" to { highway.range = highway.range / 1.35 },
@@ -739,6 +746,11 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Ketuk lirik (stempel)…" to { lyricStamp() },
                 "Daftar event global…" to { eventList() },
                 "Statistik chart…" to { showStats() },
+                "Tag song.ini (Clone Hero)…" to { iniTags() },
+                "Loop: set A = kursor" to { setLoop(true) },
+                "Loop: set B = kursor" to { setLoop(false) },
+                "Loop on/off" to { loopOn = !loopOn; toast(if (loopOn) "Loop aktif" else "Loop mati") },
+                "Loop: hapus A/B" to { highway.loopA = -1; highway.loopB = -1; loopOn = false; highway.invalidate() },
                 "Pergi ke…" to { goToDialog() },
                 "Daftar section…" to { sectionList() },
                 "Resolusi chart…" to { toast("Resolusi: ${song.resolution} tick per ketukan") }
@@ -1282,6 +1294,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         }
         val s = ChartIO.parse(bytes.toString(Charsets.UTF_8))
         chartUri = uri
+        rememberRecent(uri)
         applySong(s, keepAudio = true)
         toast("Chart dibuka: $name")
     }
@@ -1315,6 +1328,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
         if (chart != null) {
             val cu = DocumentsContract.buildDocumentUriUsingTree(tree, chart.id)
             chartUri = cu
+            rememberRecent(cu)
             s = ChartIO.parse(readBytes(cu).toString(Charsets.UTF_8))
         } else {
             chartUri = null
@@ -1330,6 +1344,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     val i = l.indexOf('=')
                     if (i > 0) map[l.substring(0, i).trim().lowercase()] = l.substring(i + 1).trim()
                 }
+                for ((k, v) in map) if (k != "name" && k != "artist" && k != "album" && k != "genre" && k != "charter" && k != "year" && k != "[song]") s.ini[k] = v
                 fun fill(key: String, ini: String) {
                     if ((s.meta[key] ?: "").isEmpty() && !map[ini].isNullOrEmpty()) s.meta[key] = map[ini]!!
                 }
@@ -1369,7 +1384,8 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             updateTitle()
             toast("Tersimpan")
         } catch (e: Exception) {
-            toast("Gagal menyimpan: ${e.message}")
+            toast("Tidak bisa menimpa file asli, pilih lokasi simpan")
+            saveAs()
         }
     }
 
@@ -1414,9 +1430,11 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 ini.append("genre = ").append(m["Genre"] ?: "rock").append("\r\n")
                 ini.append("year = ").append((m["Year"] ?: "").removePrefix(",").trim()).append("\r\n")
                 ini.append("charter = ").append(m["Charter"] ?: "").append("\r\n")
-                ini.append("diff_guitar = ").append(m["Difficulty"] ?: "0").append("\r\n")
+                val extraIni = LinkedHashMap(song.ini)
+                if (!extraIni.containsKey("diff_guitar")) extraIni["diff_guitar"] = m["Difficulty"] ?: "0"
                 val ps = ((m["PreviewStart"]?.toDoubleOrNull() ?: 0.0) * 1000).toInt()
-                ini.append("preview_start_time = ").append(ps).append("\r\n")
+                if (!extraIni.containsKey("preview_start_time")) extraIni["preview_start_time"] = ps.toString()
+                for ((k, v) in extraIni) ini.append(k).append(" = ").append(v).append("\r\n")
                 val ti = target("song.ini", "text/plain")
                 contentResolver.openOutputStream(ti, "wt")?.use { it.write(ini.toString().toByteArray(Charsets.UTF_8)) }
                 runOnUiThread { toast("Diekspor: notes.chart, song.ini" + (if (files.isNotEmpty()) ", " + files.joinToString(", ") else "")) }
@@ -1686,6 +1704,18 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
             }
         }
         val t = highway.tempo.secToTick(chartSec + setCalib / 1000.0)
+        if (loopOn && highway.loopA >= 0 && highway.loopB > highway.loopA && t >= highway.loopB) {
+            for (st in stems) try {
+                if (st.player.isPlaying) st.player.pause()
+            } catch (e: Exception) {
+            }
+            startChartSec = highway.tempo.tickToSec(highway.loopA.toDouble())
+            wallStart = now
+            audioStarted = false
+            lastTick = highway.loopA.toDouble()
+            highway.curTick = highway.loopA.toDouble()
+            return
+        }
         if (t > lastTick && t - lastTick < song.resolution * 2) {
             if (setMetronome) {
                 val lines = BeatGrid.lines(song, Math.floor(lastTick).toInt() + 1, Math.floor(t).toInt())
@@ -1773,6 +1803,103 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     updateInfo()
                 }
             }.show()
+    }
+
+    private fun setLoop(isA: Boolean) {
+        val t = highway.snapTickPublic(highway.curTick)
+        if (isA) highway.loopA = t else highway.loopB = t
+        if (highway.loopA >= 0 && highway.loopB > highway.loopA) loopOn = true
+        highway.invalidate()
+        toast("Loop ${if (isA) "A" else "B"} = tick $t")
+    }
+
+    private fun selectByDialog() {
+        val ln = highway.lanes
+        val items = ArrayList<String>()
+        val acts = ArrayList<() -> Unit>()
+        for (i in 0 until ln.count) {
+            items.add("Semua not jalur ${i + 1}")
+            acts.add { highway.selectBy(0, i) }
+        }
+        items.add(if (ln.mode == Mode.DRUMS) "Semua kick" else "Semua not open")
+        acts.add { highway.selectBy(0, -1) }
+        items.add("Semua chord")
+        acts.add { highway.selectBy(3) }
+        items.add("Semua not bersustain")
+        acts.add { highway.selectBy(4) }
+        if (ln.mode == Mode.DRUMS) {
+            items.add("Semua cymbal")
+            acts.add { highway.selectBy(5) }
+        } else {
+            items.add("Semua HOPO")
+            acts.add { highway.selectBy(1) }
+            items.add("Semua tap")
+            acts.add { highway.selectBy(2) }
+            items.add("Semua forced")
+            acts.add { highway.selectBy(6) }
+        }
+        AlertDialog.Builder(this).setTitle("Pilih semua…")
+            .setItems(items.toTypedArray()) { _, i -> acts[i]() }
+            .setNegativeButton("Batal", null).show()
+    }
+
+    private val iniKeys = listOf(
+        "delay", "diff_guitar", "diff_bass", "diff_rhythm", "diff_keys", "diff_drums", "song_length",
+        "hopo_frequency", "sustain_cutoff_threshold", "multiplier_note", "pro_drums", "five_lane_drums",
+        "icon", "loading_phrase", "playlist_track", "modchart"
+    )
+
+    private fun iniTags() {
+        form(
+            "Tag song.ini (ikut tertulis saat Ekspor ke folder Clone Hero)",
+            iniKeys.map { it to (song.ini[it] ?: "") },
+            iniKeys.map { InputType.TYPE_CLASS_TEXT },
+            "Isi default", onNeutral = {
+                for ((k, v) in listOf("diff_guitar" to "-1", "diff_bass" to "-1", "diff_rhythm" to "-1", "diff_keys" to "-1", "diff_drums" to "-1", "hopo_frequency" to "170", "sustain_cutoff_threshold" to "-1", "multiplier_note" to "116")) {
+                    if (song.ini[k].isNullOrEmpty()) song.ini[k] = v
+                }
+                toast("Tag default diisi (buka lagi dialog untuk melihat)")
+            }
+        ) { v ->
+            for ((i, k) in iniKeys.withIndex()) {
+                val t = v[i].trim()
+                if (t.isEmpty()) song.ini.remove(k) else song.ini[k] = t
+            }
+            dirty = true
+            updateTitle()
+        }
+    }
+
+    private fun openRecent() {
+        val u = prefs().getString("recent", null)
+        if (u == null) {
+            toast("Belum ada file terakhir")
+            return
+        }
+        try {
+            loadChartFromUri(Uri.parse(u))
+        } catch (e: Exception) {
+            toast("Tidak bisa membuka file terakhir: ${e.message}")
+        }
+    }
+
+    private fun rememberRecent(u: Uri?) {
+        if (u != null) prefs().edit().putString("recent", u.toString()).apply()
+    }
+
+    private fun handleViewIntent(i: Intent?) {
+        val u = i?.data ?: return
+        if (i.action != Intent.ACTION_VIEW) return
+        try {
+            loadChartFromUri(u)
+        } catch (e: Exception) {
+            toast("Gagal membuka: ${e.message}")
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleViewIntent(intent)
     }
 
     private fun showStats() {
@@ -1942,7 +2069,10 @@ Tipe not: Nat = natural, Strum, HOPO, Tap (tombol "TIPE NOT BARU" untuk yang bar
 TOOLS
 • Validasi lagu, Tap BPM, Ketuk lirik (stempel kata ke posisi sekarang sambil memutar musik), Daftar event global.
 • Edit > Anchor BPM: mengunci waktu penanda BPM; mengubah BPM sebelumnya akan menyesuaikan BPM sebelum anchor agar tidak bergeser.
-• File mendukung .chart dan .mid (impor / ekspor).
+• File mendukung .chart dan .mid (impor / ekspor). File .chart / .mid juga bisa dibuka dari pengelola file lewat "Buka dengan ChartDroid"; File > Buka terakhir membuka file sebelumnya.
+• Loop A–B (Tools): tandai A dan B di kursor, aktifkan Loop, lalu putar untuk mengulang bagian sulit.
+• Edit > Potong sustain / Hapus sustain pendek merapikan sustain; Tools > Tag song.ini mengisi tag Clone Hero.
+• Panel "TARUH DI KURSOR": ketuk warna jalur untuk menaruh not di posisi kursor, bahkan saat lagu diputar.
 
 TIPS
 • Atur BPM dan Offset (Song > Offset audio) dulu sampai garis ketukan pas dengan musik. Aktifkan waveform di Options untuk membantu.
