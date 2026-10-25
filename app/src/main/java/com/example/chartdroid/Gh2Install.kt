@@ -204,18 +204,24 @@ private class ShiftSrc(private val inner: Vag.Src, private var leadFrames: Long)
     }
 }
 
-object Gh2Installer {
-    class Child(val id: String, val name: String)
+class Gh2Job(val label: String, val song: Song, val meta: Gh2.Meta, val lead: String, val coop: String?, val audio: List<Uri>)
 
-    private fun children(ctx: Context, tree: Uri): List<Child> {
+object Gh2Installer {
+    class Child(val id: String, val name: String, val isDir: Boolean)
+
+    fun children(ctx: Context, tree: Uri, parentDocId: String? = null): List<Child> {
         val out = ArrayList<Child>()
-        val parent = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        val parent = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId ?: DocumentsContract.getTreeDocumentId(tree))
         ctx.contentResolver.query(
             parent,
-            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            ),
             null, null, null
         )?.use { c ->
-            while (c.moveToNext()) out.add(Child(c.getString(0), c.getString(1)))
+            while (c.moveToNext()) out.add(Child(c.getString(0), c.getString(1), c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR))
         }
         return out
     }
@@ -223,53 +229,15 @@ object Gh2Installer {
     private fun readAll(ctx: Context, uri: Uri): ByteArray =
         ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw IllegalStateException("Tidak bisa membaca berkas")
 
-    /**
-     * Pasang lagu. tree = folder GEN (berisi MAIN.HDR dan MAIN_0.ARK).
-     * Mengembalikan ringkasan teks. Dipanggil dari thread latar.
-     */
-    fun install(
-        ctx: Context, tree: Uri, song: Song, meta: Gh2.Meta,
-        leadKey: String, coopKey: String?, audio: List<Uri>,
-        log: (String) -> Unit, cancelled: () -> Boolean
-    ): String {
-        val kids = children(ctx, tree)
-        val hdrChild = kids.firstOrNull { it.name.endsWith(".hdr", true) }
-            ?: throw IllegalStateException("Folder ini tidak berisi berkas .HDR. Pilih folder GEN (berisi MAIN.HDR dan MAIN_0.ARK).")
-        val base = hdrChild.name.substring(0, hdrChild.name.length - 4)
-        val arkChildren = kids.filter { it.name.endsWith(".ark", true) && it.name.startsWith(base, true) }
-            .sortedBy {
-                val n = it.name.substring(base.length).removeSuffix(".ark").removeSuffix(".ARK").trimStart('_')
-                n.toIntOrNull() ?: -1
-            }
-        if (arkChildren.isEmpty()) throw IllegalStateException("Berkas ${base}_0.ARK tidak ditemukan di folder yang sama dengan ${hdrChild.name}")
-        val hdrUri = DocumentsContract.buildDocumentUriUsingTree(tree, hdrChild.id)
-        val hdrBytes = readAll(ctx, hdrUri)
-
-        // cadangan HDR (cukup, karena data ARK hanya ditambah di akhir)
-        val bakName = hdrChild.name + ".bak"
-        if (kids.none { it.name == bakName }) {
-            val treeDoc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
-            val bak = DocumentsContract.createDocument(ctx.contentResolver, treeDoc, "application/octet-stream", bakName)
-                ?: throw IllegalStateException("Gagal membuat cadangan HDR")
-            ctx.contentResolver.openOutputStream(bak, "wt")!!.use { it.write(hdrBytes) }
-            log("Cadangan HDR dibuat: $bakName")
-        } else log("Cadangan HDR sudah ada ($bakName), tidak ditimpa")
-
-        val blobs = arkChildren.map { SafBlob(ctx, DocumentsContract.buildDocumentUriUsingTree(tree, it.id)) }
+    /** Proses satu lagu: tulis .mid/.vgs ke ARK, kembalikan item DTB. */
+    private fun processJob(ctx: Context, ark: Ark, job: Gh2Job, log: (String) -> Unit, cancelled: () -> Boolean): Pair<Gh2.Item, List<String>> {
+        val tmp = ArrayList<File>()
         try {
-            val ark = Ark.open(hdrBytes, blobs)
-            // ukuran ARK terakhir di HDR harus <= panjang berkas
-            for ((i, b) in blobs.withIndex()) {
-                if (b.length() < ark.partSizes[i]) throw IllegalStateException("Ukuran ${arkChildren[i].name} lebih kecil dari yang tercatat di HDR (berkas rusak/tidak lengkap)")
-            }
-
-            // ---- audio ----
-            val tmp = ArrayList<File>()
             var audioFrames = 0L
             var mixFile: File? = null
-            if (audio.isNotEmpty()) {
-                for ((i, u) in audio.withIndex()) {
-                    log("Mendekode audio ${i + 1}/${audio.size}…")
+            if (job.audio.isNotEmpty()) {
+                for ((i, u) in job.audio.withIndex()) {
+                    log("${job.label}: mendekode audio ${i + 1}/${job.audio.size}…")
                     val f = File(ctx.cacheDir, "gh2_dec_$i.pcm")
                     tmp.add(f)
                     PcmDecoder.decodeToFile(ctx, u, f, cancelled)
@@ -278,49 +246,199 @@ object Gh2Installer {
                 audioFrames = PcmDecoder.mix(tmp, mixFile)
                 tmp.add(mixFile)
             }
+            val meta = job.meta
+            val audioSec = audioFrames.toDouble() / PcmDecoder.RATE
+            log("${job.label}: menyusun MIDI…")
+            val mr = Gh2.buildMidi(job.song, job.lead, job.coop, meta.coop == "bass", audioSec, job.song.offset.toDouble())
+            val totalSec = mr.endSeconds + 5.0
+            val shiftFrames = Math.round((mr.padSeconds - job.song.offset) * PcmDecoder.RATE)
+            log("${job.label}: mengenkode audio PS2…")
+            val vgs = ByteArrayOutputStream()
+            var ins: BufferedInputStream? = null
             try {
-                val audioSec = audioFrames.toDouble() / PcmDecoder.RATE
-                log("Menyusun MIDI GH2…")
-                val coopIsBass = meta.coop == "bass"
-                val mr = Gh2.buildMidi(song, leadKey, coopKey, coopIsBass, audioSec, song.offset.toDouble())
-                val totalSec = mr.endSeconds + 5.0
-                val shiftSec = mr.padSeconds - song.offset
-                val shiftFrames = Math.round(shiftSec * PcmDecoder.RATE)
-
-                log("Mengenkode VGS (PS2 ADPCM)…")
-                val vgs = ByteArrayOutputStream()
                 val bandSrc: Vag.Src = if (mixFile != null) {
-                    val ins = BufferedInputStream(FileInputStream(mixFile), 1 shl 16)
+                    ins = BufferedInputStream(FileInputStream(mixFile), 1 shl 16)
                     val s = Vag.StreamSrc(2, PcmDecoder.RATE, ins, if (shiftFrames < 0) -shiftFrames else 0L)
                     if (shiftFrames > 0) ShiftSrc(s, shiftFrames) else s
                 } else Vag.ZeroSrc(2, PcmDecoder.RATE)
                 Vag.writeVgs(vgs, listOf(bandSrc, Vag.ZeroSrc(1, 11025)), totalSec)
-                val empty = ByteArrayOutputStream()
-                Vag.writeVgs(empty, listOf(Vag.ZeroSrc(1, 1024)), totalSec)
-
-                val previewStart = (totalSec * 0.3 * 1000).toInt()
-                val entry = Gh2.songEntry(meta, previewStart, previewStart + 30000, (mr.endSeconds * 1000).toInt())
-                log("Menulis ke ARK…")
-                val files = linkedMapOf(
-                    "${meta.symbol}.mid" to mr.bytes,
-                    "${meta.symbol}.vgs" to vgs.toByteArray(),
-                    "${meta.symbol}_empty.vgs" to empty.toByteArray()
-                )
-                val warn = Gh2.installInto(ark, meta, entry, mr.scores, files)
-                // pastikan data ARK tertulis sebelum HDR
-                blobs.forEach { it.flush() }
-                log("Menulis HDR…")
-                ctx.contentResolver.openOutputStream(hdrUri, "wt")!!.use { it.write(ark.hdrBytes()) }
-                val sb = StringBuilder()
-                sb.append("Selesai. Lagu '${meta.title}' (simbol ${meta.symbol}) dipasang.\n")
-                sb.append("Durasi chart ±${mr.endSeconds.toInt()} dtk, pad awal ${"%.1f".format(mr.padSeconds)} dtk.\n")
-                for (w in mr.warnings + warn) sb.append("• $w\n")
-                return sb.toString()
             } finally {
-                tmp.forEach { it.delete() }
+                try { ins?.close() } catch (e: Exception) {}
             }
+            val empty = ByteArrayOutputStream()
+            Vag.writeVgs(empty, listOf(Vag.ZeroSrc(1, 1024)), totalSec)
+            val previewStart = (totalSec * 0.3 * 1000).toInt()
+            val entry = Gh2.songEntry(meta, previewStart, previewStart + 30000, (mr.endSeconds * 1000).toInt())
+            ark.put("songs/${meta.symbol}/${meta.symbol}.mid", mr.bytes)
+            ark.put("songs/${meta.symbol}/${meta.symbol}.vgs", vgs.toByteArray())
+            ark.put("songs/${meta.symbol}/${meta.symbol}_empty.vgs", empty.toByteArray())
+            return Gh2.Item(meta, entry, mr.scores) to mr.warnings.map { "${job.label}: $it" }
         } finally {
-            blobs.forEach { try { it.close() } catch (e: Exception) {} }
+            tmp.forEach { it.delete() }
+        }
+    }
+
+    /**
+     * Pasang beberapa lagu sekaligus. target = folder GEN (tree) atau berkas ISO.
+     * Dipanggil dari thread latar.
+     */
+    fun installMany(
+        ctx: Context, target: Uri, isIso: Boolean, jobs: List<Gh2Job>,
+        log: (String) -> Unit, cancelled: () -> Boolean
+    ): String {
+        val closers = ArrayList<SafBlob>()
+        try {
+            val ark: Ark
+            val commit: (Ark) -> Unit
+            if (isIso) {
+                log("Membuka ISO…")
+                val sb = SafBlob(ctx, target)
+                closers.add(sb)
+                val g = IsoGen.open(sb)
+                val hdr = g.readHdr()
+                val parts = g.arkParts(log)
+                ark = Ark.open(hdr, parts)
+                commit = { a -> sb.flush(); g.commit(a.hdrBytes(), a.partSizes.last()); sb.flush() }
+            } else {
+                val kids = children(ctx, target)
+                val hdrChild = kids.firstOrNull { it.name.endsWith(".hdr", true) }
+                    ?: throw IllegalStateException("Folder ini tidak berisi berkas .HDR. Pilih folder GEN (berisi MAIN.HDR dan MAIN_0.ARK).")
+                val base = hdrChild.name.substring(0, hdrChild.name.length - 4)
+                val arkChildren = kids.filter { it.name.endsWith(".ark", true) && it.name.startsWith(base, true) }
+                    .sortedBy { (it.name.substring(base.length).dropLast(4).trimStart('_')).toIntOrNull() ?: -1 }
+                if (arkChildren.isEmpty()) throw IllegalStateException("Berkas ${base}_0.ARK tidak ditemukan di folder yang sama dengan ${hdrChild.name}")
+                val hdrUri = DocumentsContract.buildDocumentUriUsingTree(target, hdrChild.id)
+                val hdrBytes = readAll(ctx, hdrUri)
+                val bakName = hdrChild.name + ".bak"
+                if (kids.none { it.name == bakName }) {
+                    val treeDoc = DocumentsContract.buildDocumentUriUsingTree(target, DocumentsContract.getTreeDocumentId(target))
+                    val bak = DocumentsContract.createDocument(ctx.contentResolver, treeDoc, "application/octet-stream", bakName)
+                        ?: throw IllegalStateException("Gagal membuat cadangan HDR")
+                    ctx.contentResolver.openOutputStream(bak, "wt")!!.use { it.write(hdrBytes) }
+                    log("Cadangan HDR dibuat: $bakName")
+                }
+                val blobs = arkChildren.map { SafBlob(ctx, DocumentsContract.buildDocumentUriUsingTree(target, it.id)) }
+                closers.addAll(blobs)
+                ark = Ark.open(hdrBytes, blobs)
+                for ((i, b) in blobs.withIndex()) {
+                    if (b.length() < ark.partSizes[i]) throw IllegalStateException("Ukuran ${arkChildren[i].name} lebih kecil dari yang tercatat di HDR (berkas rusak/tidak lengkap)")
+                }
+                commit = { a ->
+                    blobs.forEach { it.flush() }
+                    ctx.contentResolver.openOutputStream(hdrUri, "wt")!!.use { it.write(a.hdrBytes()) }
+                }
+            }
+            val items = ArrayList<Gh2.Item>()
+            val warns = ArrayList<String>()
+            val failed = ArrayList<String>()
+            for ((i, job) in jobs.withIndex()) {
+                if (cancelled()) { failed.add("(dibatalkan sebelum ${job.label})"); break }
+                log("[${i + 1}/${jobs.size}] ${job.label}")
+                try {
+                    val (item, w) = processJob(ctx, ark, job, { m -> log("[${i + 1}/${jobs.size}] $m") }, cancelled)
+                    items.add(item)
+                    warns.addAll(w)
+                } catch (e: InterruptedException) {
+                    failed.add("${job.label}: dibatalkan")
+                    break
+                } catch (e: Exception) {
+                    failed.add("${job.label}: ${e.message ?: e.javaClass.simpleName}")
+                }
+            }
+            if (items.isEmpty()) throw IllegalStateException("Tidak ada lagu yang berhasil diproses.\n" + failed.joinToString("\n"))
+            log("Memperbarui daftar lagu (DTB)…")
+            warns.addAll(Gh2.installDtbs(ark, items))
+            log("Menulis HDR…")
+            commit(ark)
+            val sb = StringBuilder()
+            sb.append("Selesai: ${items.size} lagu dipasang").append(if (failed.isNotEmpty()) ", ${failed.size} gagal/dilewati" else "").append(".\n")
+            for (it in items) sb.append("✓ ${it.meta.title} (${it.meta.symbol})\n")
+            for (f in failed) sb.append("✗ $f\n")
+            for (w in warns.distinct()) sb.append("• $w\n")
+            return sb.toString()
+        } finally {
+            closers.forEach { try { it.close() } catch (e: Exception) {} }
+        }
+    }
+}
+
+/** Pindai folder berisi banyak lagu gaya Clone Hero (tiap lagu: notes.chart/.mid + audio + song.ini). */
+object Gh2Library {
+    class Entry(val name: String, val chartDoc: Gh2Installer.Child, val isMid: Boolean, val ini: Map<String, String>, val audio: List<Uri>)
+
+    private val audioExt = listOf(".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac")
+
+    fun parseIni(text: String): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        for (raw in text.lines()) {
+            val l = raw.trim().trimStart('\uFEFF')
+            if (l.isEmpty() || l.startsWith("[") || l.startsWith(";")) continue
+            val i = l.indexOf('=')
+            if (i <= 0) continue
+            out[l.substring(0, i).trim().lowercase()] = l.substring(i + 1).trim()
+        }
+        return out
+    }
+
+    fun scan(ctx: Context, tree: Uri, maxSongs: Int = 500): List<Entry> {
+        val out = ArrayList<Entry>()
+        fun walk(docId: String, name: String, depth: Int) {
+            if (out.size >= maxSongs || depth > 4) return
+            val kids = Gh2Installer.children(ctx, tree, docId)
+            val chart = kids.firstOrNull { !it.isDir && (it.name.equals("notes.chart", true) || it.name.equals("notes.mid", true)) }
+                ?: kids.firstOrNull { !it.isDir && (it.name.endsWith(".chart", true)) }
+                ?: kids.firstOrNull { !it.isDir && it.name.endsWith(".mid", true) }
+            if (chart != null) {
+                val iniChild = kids.firstOrNull { !it.isDir && it.name.equals("song.ini", true) }
+                val ini = try {
+                    if (iniChild != null) parseIni(String(readAllStatic(ctx, DocumentsContract.buildDocumentUriUsingTree(tree, iniChild.id)), Charsets.UTF_8)) else emptyMap()
+                } catch (e: Exception) { emptyMap() }
+                val audio = kids.filter { k ->
+                    !k.isDir && audioExt.any { k.name.endsWith(it, true) } &&
+                        !k.name.startsWith("preview", true) && !k.name.startsWith("crowd", true)
+                }.map { DocumentsContract.buildDocumentUriUsingTree(tree, it.id) }
+                out.add(Entry(name, chart, chart.name.endsWith(".mid", true), ini, audio))
+                return
+            }
+            for (k in kids.filter { it.isDir }) walk(k.id, k.name, depth + 1)
+        }
+        walk(DocumentsContract.getTreeDocumentId(tree), "(folder)", 0)
+        return out
+    }
+
+    private fun readAllStatic(ctx: Context, uri: Uri): ByteArray =
+        ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+
+    /** Ubah entri menjadi job (parse chart). Mengembalikan job atau alasan lewati. */
+    fun toJob(ctx: Context, tree: Uri, e: Entry, usedSymbols: MutableSet<String>, author: String, deluxe: Boolean): Pair<Gh2Job?, String?> {
+        return try {
+            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, e.chartDoc.id)
+            val bytes = readAllStatic(ctx, uri)
+            val song = if (e.isMid) MidiIO.read(bytes) else ChartIO.parse(String(bytes, Charsets.UTF_8).trimStart('\uFEFF'))
+            val parts = Gh2.availableParts(song)
+            if (parts.isEmpty()) return null to "${e.name}: tidak ada track 5-fret berisi not"
+            val lead = if ("Single" in parts) "Single" else parts.first()
+            val coopKey = listOf("DoubleRhythm", "DoubleBass", "DoubleGuitar", "Single").firstOrNull { it in parts && it != lead }
+            val m = Gh2.Meta()
+            m.title = e.ini["name"] ?: song.meta["Name"]?.trim('"') ?: e.name
+            m.artist = e.ini["artist"] ?: song.meta["Artist"]?.trim('"') ?: ""
+            m.album = e.ini["album"] ?: song.meta["Album"]?.trim('"') ?: ""
+            m.year = (e.ini["year"] ?: song.meta["Year"]?.trim('"') ?: "").trim(' ', ',')
+            m.genre = e.ini["genre"] ?: song.meta["Genre"]?.trim('"') ?: ""
+            m.author = e.ini["charter"] ?: e.ini["frets"] ?: author
+            m.coop = if (coopKey == "DoubleBass") "bass" else "rhythm"
+            m.deluxe = deluxe
+            m.guitarRank = e.ini["diff_guitar"]?.toIntOrNull()?.coerceIn(-1, 6) ?: 3
+            m.bassRank = (e.ini["diff_bass"] ?: e.ini["diff_rhythm"])?.toIntOrNull()?.coerceIn(-1, 6) ?: 3
+            var base = Gh2.sanitizeSymbol(m.title)
+            var sym = base
+            var n = 2
+            while (!usedSymbols.add(sym)) { sym = base.take(21) + n; n++ }
+            m.symbol = sym
+            if (song.name.isEmpty()) song.name = m.title
+            Gh2Job("${m.artist} - ${m.title}".trim(' ', '-'), song, m, lead, coopKey, e.audio) to null
+        } catch (ex: Exception) {
+            null to "${e.name}: ${ex.message}"
         }
     }
 }

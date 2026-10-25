@@ -131,6 +131,8 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private val RQ_ADD_STEM = 6
     private val RQ_EXPORT_MID = 7
     private val RQ_GH2 = 8
+    private val RQ_GH2_ISO = 10
+    private val RQ_GH2_SRC = 11
 
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val rq = pending
@@ -162,7 +164,9 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     saveChart()
                 }
                 RQ_EXPORT -> exportFolder(uri)
-                RQ_GH2 -> runGh2Install(uri)
+                RQ_GH2 -> runGh2Jobs(uri, false)
+                RQ_GH2_ISO -> runGh2Jobs(uri, true)
+                RQ_GH2_SRC -> scanGh2Folder(uri)
                 RQ_EXPORT_MID -> {
                     val os = contentResolver.openOutputStream(uri, "wt") ?: throw IllegalStateException("tidak bisa menulis")
                     os.use { it.write(MidiIO.write(song)) }
@@ -693,6 +697,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Ekspor .mid…" to { exportMid() },
                 "Ekspor ke folder Clone Hero…" to { launchTree(RQ_EXPORT) },
                 "Pasang ke GH2 Deluxe (PS2)…" to { gh2Dialog() },
+                "Pasang BANYAK lagu ke GH2 (folder)…" to { launchTree(RQ_GH2_SRC) },
                 "Pulihkan autosave" to { restoreAutosave() }
             )
             "Edit" -> listOf(
@@ -2171,8 +2176,8 @@ TIPS
             return e
         }
         val info = TextView(this)
-        info.text = "Memasang lagu ini ke folder GEN hasil ekstrak ISO GH2 Deluxe CE (berisi MAIN.HDR dan MAIN_0.ARK). " +
-            "HDR dicadangkan sebagai MAIN.HDR.bak. Audio yang sedang dimuat (semua stem) dipakai sebagai band."
+        info.text = "Target: file ISO GH2 Deluxe CE langsung di HP (buat salinan ISO dulu!), atau folder GEN hasil ekstrak (HDR dicadangkan sebagai .bak). " +
+            "Audio yang sedang dimuat (semua stem) dipakai sebagai band."
         info.textSize = 12f
         box.addView(info)
         val eSym = field("Simbol (huruf kecil/angka, jadi nama folder lagu)", gh2Meta.symbol)
@@ -2213,38 +2218,148 @@ TIPS
             .setTitle("Pasang ke GH2 Deluxe")
             .setView(sv)
             .setNegativeButton("Batal", null)
-            .setPositiveButton("Pilih folder GEN…") { _, _ ->
-                gh2Meta.symbol = Gh2.sanitizeSymbol(eSym.text.toString())
-                gh2Meta.title = eTitle.text.toString().ifBlank { "Lagu" }
-                gh2Meta.artist = eArtist.text.toString()
-                gh2Meta.album = eAlbum.text.toString()
-                gh2Meta.author = eAuthor.text.toString()
-                gh2Meta.year = eYear.text.toString()
-                gh2Meta.genre = eGenre.text.toString()
-                gh2Meta.guitarRank = eGr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
-                gh2Meta.bassRank = eBr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
-                gh2Meta.coop = if (spType.selectedItemPosition == 1) "bass" else "rhythm"
-                gh2Meta.deluxe = cbDx.isChecked
-                gh2Meta.cover = cbCover.isChecked
-                gh2Lead = parts[spLead.selectedItemPosition]
-                gh2Coop = if (spCoop.selectedItemPosition == 0) null else parts[spCoop.selectedItemPosition - 1]
-                launchTree(RQ_GH2)
-            }
+            .setNeutralButton("Folder GEN…") { _, _ -> gh2Collect(eSym, eTitle, eArtist, eAlbum, eAuthor, eYear, eGenre, eGr, eBr, spType, cbDx, cbCover, spLead, spCoop, parts); chooseGh2Target(false) }
+            .setPositiveButton("File ISO…") { _, _ -> gh2Collect(eSym, eTitle, eArtist, eAlbum, eAuthor, eYear, eGenre, eGr, eBr, spType, cbDx, cbCover, spLead, spCoop, parts); chooseGh2Target(true) }
             .show()
     }
 
-    private fun runGh2Install(tree: Uri) {
-        val sng = song
-        val meta = gh2Meta
-        val lead = gh2Lead.ifEmpty { Gh2.availableParts(sng).first() }
-        val coop = gh2Coop
-        val audio = stems.map { it.uri }
+    private fun gh2Collect(
+        eSym: EditText, eTitle: EditText, eArtist: EditText, eAlbum: EditText, eAuthor: EditText, eYear: EditText,
+        eGenre: EditText, eGr: EditText, eBr: EditText, spType: Spinner, cbDx: CheckBox, cbCover: CheckBox,
+        spLead: Spinner, spCoop: Spinner, parts: List<String>
+    ) {
+        gh2Meta.symbol = Gh2.sanitizeSymbol(eSym.text.toString())
+        gh2Meta.title = eTitle.text.toString().ifBlank { "Lagu" }
+        gh2Meta.artist = eArtist.text.toString()
+        gh2Meta.album = eAlbum.text.toString()
+        gh2Meta.author = eAuthor.text.toString()
+        gh2Meta.year = eYear.text.toString()
+        gh2Meta.genre = eGenre.text.toString()
+        gh2Meta.guitarRank = eGr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
+        gh2Meta.bassRank = eBr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
+        gh2Meta.coop = if (spType.selectedItemPosition == 1) "bass" else "rhythm"
+        gh2Meta.deluxe = cbDx.isChecked
+        gh2Meta.cover = cbCover.isChecked
+        gh2Lead = parts[spLead.selectedItemPosition]
+        gh2Coop = if (spCoop.selectedItemPosition == 0) null else parts[spCoop.selectedItemPosition - 1]
+        val m = gh2Meta
+        val copy = Gh2.Meta(m.symbol, m.title, m.artist, m.album, m.author, m.year, m.genre, m.coop, m.guitarRank, m.bassRank, m.drumRank, m.cover, m.deluxe)
+        gh2Jobs = listOf(Gh2Job(m.title, song, copy, gh2Lead, gh2Coop, stems.map { it.uri }))
+    }
+
+    private var gh2Jobs: List<Gh2Job> = emptyList()
+
+    private fun chooseGh2Target(iso: Boolean) {
+        if (iso) {
+            pending = RQ_GH2_ISO
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            i.type = "*/*"
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            launcher.launch(i)
+        } else launchTree(RQ_GH2)
+    }
+
+    private fun scanGh2Folder(tree: Uri) {
+        val tv = TextView(this)
+        tv.setPadding(dp(20), dp(16), dp(20), dp(16))
+        tv.text = "Memindai folder…"
+        val dlg = AlertDialog.Builder(this).setTitle("Memindai").setView(tv).setCancelable(false).show()
+        Thread {
+            try {
+                val entries = Gh2Library.scan(this, tree)
+                runOnUiThread {
+                    try { dlg.dismiss() } catch (e: Exception) {}
+                    if (entries.isEmpty()) {
+                        toast("Tidak ada lagu (notes.chart / notes.mid) ditemukan")
+                        return@runOnUiThread
+                    }
+                    showGh2BatchList(tree, entries)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    try { dlg.dismiss() } catch (x: Exception) {}
+                    toast("Gagal memindai: ${e.message}")
+                }
+            }
+        }.start()
+    }
+
+    private fun showGh2BatchList(tree: Uri, entries: List<Gh2Library.Entry>) {
+        val checked = BooleanArray(entries.size) { true }
+        val names = entries.map { (it.ini["artist"]?.let { a -> "$a - " } ?: "") + (it.ini["name"] ?: it.name) }.toTypedArray()
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        val eAuthor = EditText(this)
+        eAuthor.hint = "Author bila song.ini tidak punya charter"
+        eAuthor.setText(gh2Meta.author)
+        eAuthor.setSingleLine(true)
+        val cbDx = CheckBox(this)
+        cbDx.text = "Format GH2 Deluxe"
+        cbDx.isChecked = true
+        box.setPadding(dp(16), dp(8), dp(16), dp(0))
+        box.addView(eAuthor)
+        box.addView(cbDx)
+        val sv = ScrollView(this)
+        sv.addView(box)
+        for ((i, n) in names.withIndex()) {
+            val cb = CheckBox(this)
+            cb.text = n
+            cb.isChecked = true
+            cb.setOnCheckedChangeListener { _, on -> checked[i] = on }
+            box.addView(cb)
+        }
+        fun go(iso: Boolean) {
+            val sel = entries.indices.filter { checked[it] }
+            if (sel.isEmpty()) { toast("Tidak ada lagu dipilih"); return }
+            val author = eAuthor.text.toString()
+            val dx = cbDx.isChecked
+            val tv = TextView(this)
+            tv.setPadding(dp(20), dp(16), dp(20), dp(16))
+            tv.text = "Membaca chart…"
+            val dlg = AlertDialog.Builder(this).setTitle("Menyiapkan").setView(tv).setCancelable(false).show()
+            Thread {
+                val used = HashSet<String>()
+                val jobs = ArrayList<Gh2Job>()
+                val skipped = ArrayList<String>()
+                for (i in sel) {
+                    val (job, why) = Gh2Library.toJob(this, tree, entries[i], used, author, dx)
+                    if (job != null) jobs.add(job) else if (why != null) skipped.add(why)
+                }
+                runOnUiThread {
+                    try { dlg.dismiss() } catch (e: Exception) {}
+                    if (jobs.isEmpty()) {
+                        AlertDialog.Builder(this).setTitle("Tidak ada yang bisa dipasang").setMessage(skipped.joinToString("\n")).setPositiveButton("OK", null).show()
+                    } else {
+                        gh2Jobs = jobs
+                        gh2Skipped = skipped
+                        chooseGh2Target(iso)
+                    }
+                }
+            }.start()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Pilih lagu (${entries.size} ditemukan)")
+            .setView(sv)
+            .setNegativeButton("Batal", null)
+            .setNeutralButton("Folder GEN…") { _, _ -> go(false) }
+            .setPositiveButton("File ISO…") { _, _ -> go(true) }
+            .show()
+    }
+
+    private var gh2Skipped: List<String> = emptyList()
+
+    private fun runGh2Jobs(target: Uri, isIso: Boolean) {
+        val jobs = gh2Jobs
+        val skipped = gh2Skipped
+        gh2Skipped = emptyList()
+        if (jobs.isEmpty()) { toast("Tidak ada lagu untuk dipasang"); return }
         val tv = TextView(this)
         tv.setPadding(dp(20), dp(16), dp(20), dp(16))
         tv.text = "Memulai…"
         val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Memasang ke GH2")
+            .setTitle("Memasang ${jobs.size} lagu ke GH2")
             .setView(tv)
             .setCancelable(false)
             .setNegativeButton("Batal") { _, _ -> cancel.set(true) }
@@ -2252,9 +2367,10 @@ TIPS
         Thread {
             var result: String
             try {
-                result = Gh2Installer.install(this, tree, sng, meta, lead, coop, audio, { m -> runOnUiThread { tv.text = m } }, { cancel.get() })
+                result = Gh2Installer.installMany(this, target, isIso, jobs, { m -> runOnUiThread { tv.text = m } }, { cancel.get() })
+                if (skipped.isNotEmpty()) result += "Dilewati:\n" + skipped.joinToString("\n") { "✗ $it" }
             } catch (e: Throwable) {
-                result = "GAGAL: ${e.message ?: e.javaClass.simpleName}\nHDR asli tidak diubah bila pesan ini muncul sebelum langkah 'Menulis HDR'."
+                result = "GAGAL: ${e.message ?: e.javaClass.simpleName}\nBila pesan ini muncul sebelum 'Menulis HDR', HDR/ISO asli belum diubah (kecuali ARK yang diperpanjang di akhir)."
             }
             runOnUiThread {
                 try { dlg.dismiss() } catch (e: Exception) {}

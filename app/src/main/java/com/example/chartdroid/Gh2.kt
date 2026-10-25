@@ -31,7 +31,11 @@ object Dtb {
     /** Tipe 0x10 Parens, 0x11 Braces, 0x13 Brackets. */
     class T(val type: Int, val kids: MutableList<C>) : C()
 
-    class Doc(val flag: Int, val root: MutableList<C>)
+    class Doc(val flag: Int, val root: MutableList<C>) {
+        /** 0 = tidak terenkripsi, 1 = enkripsi lama (GH PS2), 2 = enkripsi baru (Rock Band). */
+        var crypt = 0
+        var key = 0
+    }
 
     fun sym(s: String): C = S(5, s.toByteArray(Charsets.ISO_8859_1))
     fun str(s: String): C = S(0x12, s.toByteArray(Charsets.ISO_8859_1))
@@ -114,6 +118,78 @@ object Dtb {
         w.out.write(doc.flag)
         w.tree(doc.root)
         return w.out.toByteArray()
+    }
+
+    // ---------- enkripsi DTB (dari Onyx Harmonix/DTA/Crypt.hs) ----------
+    private fun oldStream(key: Int, n: Int): ByteArray {
+        val tbl = IntArray(0xF9)
+        var v1 = key
+        for (i in 0..0xF8) {
+            val v2 = v1 * 0x41C64E6D + 0x3039
+            v1 = v2 * 0x41C64E6D + 0x3039
+            tbl[i] = (v1 and 0x7FFF0000) or (v2 ushr 16)
+        }
+        var i1 = 0
+        var i2 = 0x67
+        val out = ByteArray(n)
+        for (k in 0 until n) {
+            val next = tbl[i1] xor tbl[i2]
+            tbl[i1] = next
+            i1 = if (i1 == 0xF8) 0 else i1 + 1
+            i2 = if (i2 == 0xF8) 0 else i2 + 1
+            out[k] = next.toByte()
+        }
+        return out
+    }
+
+    private fun newStream(key: Int, n: Int): ByteArray {
+        var d = key.toLong() and 0xFFFFFFFFL
+        val out = ByteArray(n)
+        for (k in 0 until n) {
+            val q = d / 0x1F31DL
+            var v = ((d - q * 0x1F31DL) * 0x41A7L - q * 0xB14L) and 0xFFFFFFFFL
+            if (v > 0x7FFFFFFFL) v = (v + 0x7FFFFFFFL) and 0xFFFFFFFFL
+            d = v
+            out[k] = v.toByte()
+        }
+        return out
+    }
+
+    private fun xorWith(data: ByteArray, from: Int, stream: ByteArray): ByteArray {
+        val out = ByteArray(data.size - from)
+        for (i in out.indices) out[i] = (data[from + i].toInt() xor stream[i].toInt()).toByte()
+        return out
+    }
+
+    private fun tryParse(b: ByteArray, strict: Boolean): Doc? = try {
+        val bb = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
+        val flag = bb.get().toInt() and 0xFF
+        val root = readTree(bb)
+        if (strict && bb.hasRemaining()) null else Doc(flag, root)
+    } catch (e: Exception) { null }
+
+    /** Baca DTB, otomatis mendeteksi enkripsi. */
+    fun parseAny(data: ByteArray): Doc {
+        tryParse(data, true)?.let { return it }
+        if (data.size > 8) {
+            val key = ByteBuffer.wrap(data, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            val n = data.size - 4
+            tryParse(xorWith(data, 4, oldStream(key, n)), true)?.let { it.crypt = 1; it.key = key; return it }
+            tryParse(xorWith(data, 4, newStream(key, n)), true)?.let { it.crypt = 2; it.key = key; return it }
+        }
+        throw IllegalArgumentException("DTB tidak bisa dibaca (bukan DTB, atau enkripsi tidak dikenal)")
+    }
+
+    /** Tulis DTB dengan enkripsi yang sama seperti saat dibaca. */
+    fun writeAny(doc: Doc): ByteArray {
+        val plain = write(doc)
+        if (doc.crypt == 0) return plain
+        val st = if (doc.crypt == 1) oldStream(doc.key, plain.size) else newStream(doc.key, plain.size)
+        val enc = xorWith(plain, 0, st)
+        val out = ByteArray(4 + enc.size)
+        ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).putInt(doc.key)
+        System.arraycopy(enc, 0, out, 4, enc.size)
+        return out
     }
 
     // ---------- bantu ----------
@@ -740,49 +816,68 @@ object Gh2 {
 
     fun coopScoresEntry(sym: String, scores: IntArray): Dtb.C = Dtb.p(Dtb.sym(sym), Dtb.pl(scores.map { Dtb.i(it) }))
 
-    /** Terapkan perubahan DTB pemasangan ke Ark. Mengembalikan peringatan. */
-    fun installInto(ark: Ark, m: Meta, entry: List<Dtb.C>, scores: IntArray, files: Map<String, ByteArray>): List<String> {
+    class Item(val meta: Meta, val entry: List<Dtb.C>, val scores: IntArray)
+
+    /** Edit songs/coop/store/locale .dtb sekali untuk semua lagu. */
+    fun installDtbs(ark: Ark, items: List<Item>): List<String> {
         val warn = ArrayList<String>()
-        val sym = m.symbol
         fun edit(path: String, required: Boolean, f: (MutableList<Dtb.C>) -> Unit) {
             val e = ark.find(path)
             if (e == null) {
-                if (required) throw IllegalStateException("Tidak menemukan $path di ARK. Apakah ini folder GEN GH2?")
+                if (required) throw IllegalStateException("Tidak menemukan $path di ARK. Apakah ini GH2 (GEN)?")
                 warn.add("Berkas opsional tidak ada: $path")
                 return
             }
-            val doc = Dtb.parse(ark.read(e))
+            val doc = Dtb.parseAny(ark.read(e))
             f(doc.root)
-            ark.put(path, Dtb.write(doc))
+            ark.put(path, Dtb.writeAny(doc))
         }
         edit("config/gen/songs.dtb", true) { root ->
-            Dtb.removeEntry(root, sym)
-            root.add(0, Dtb.T(0x10, (listOf(Dtb.sym(sym)) + entry).toMutableList()))
+            for (it in items) {
+                if (root.any { c -> Dtb.isEntry(c, it.meta.symbol) }) warn.add("Simbol '${it.meta.symbol}' sudah ada di songs.dtb dan ditimpa")
+                Dtb.removeEntry(root, it.meta.symbol)
+                root.add(0, Dtb.T(0x10, (listOf(Dtb.sym(it.meta.symbol)) + it.entry).toMutableList()))
+            }
         }
         edit("config/gen/coop_max_scores.dtb", false) { root ->
-            Dtb.removeEntry(root, sym)
-            root.add(0, coopScoresEntry(sym, scores))
+            for (it in items) {
+                Dtb.removeEntry(root, it.meta.symbol)
+                root.add(0, coopScoresEntry(it.meta.symbol, it.scores))
+            }
         }
         edit("config/gen/store.dtb", false) { root ->
             var done = false
             for (c in root) {
                 if (c is Dtb.T && c.type == 0x10 && c.kids.isNotEmpty() && Dtb.symName(c.kids[0]) == "song") {
-                    c.kids.removeAll { Dtb.isEntry(it, sym) }
-                    c.kids.add(Dtb.p(Dtb.sym(sym), Dtb.p(Dtb.sym("price"), Dtb.i(0))))
+                    for (it in items) {
+                        c.kids.removeAll { k -> Dtb.isEntry(k, it.meta.symbol) }
+                        c.kids.add(Dtb.p(Dtb.sym(it.meta.symbol), Dtb.p(Dtb.sym("price"), Dtb.i(0))))
+                    }
                     done = true
                 }
             }
             if (!done) warn.add("store.dtb: grup 'song' tidak ditemukan; lagu tidak masuk toko bonus")
         }
         edit("ui/eng/gen/locale.dtb", false) { root ->
-            for (k in listOf(sym, sym + "_shop_desc", sym + "_author", "loading_tip_$sym")) Dtb.removeEntry(root, k)
+            for (it in items) {
+                val sym = it.meta.symbol
+                for (k in listOf(sym, sym + "_shop_desc", sym + "_author", "loading_tip_$sym")) Dtb.removeEntry(root, k)
+            }
             val add = ArrayList<Dtb.C>()
-            add.add(Dtb.p(Dtb.sym(sym), Dtb.str(latin(m.title))))
-            add.add(Dtb.p(Dtb.sym(sym + "_shop_desc"), Dtb.str(latin(m.artist))))
-            if (m.deluxe && m.author.isNotBlank()) add.add(Dtb.p(Dtb.sym(sym + "_author"), Dtb.str(latin(m.author))))
+            for (it in items) {
+                val m = it.meta
+                add.add(Dtb.p(Dtb.sym(m.symbol), Dtb.str(latin(m.title))))
+                add.add(Dtb.p(Dtb.sym(m.symbol + "_shop_desc"), Dtb.str(latin(m.artist))))
+                if (m.deluxe && m.author.isNotBlank()) add.add(Dtb.p(Dtb.sym(m.symbol + "_author"), Dtb.str(latin(m.author))))
+            }
             root.addAll(0, add)
         }
-        for ((name, data) in files) ark.put("songs/$sym/$name", data)
         return warn
+    }
+
+    /** Pemasangan satu lagu (kompatibilitas). */
+    fun installInto(ark: Ark, m: Meta, entry: List<Dtb.C>, scores: IntArray, files: Map<String, ByteArray>): List<String> {
+        for ((name, data) in files) ark.put("songs/${m.symbol}/$name", data)
+        return installDtbs(ark, listOf(Item(m, entry, scores)))
     }
 }
