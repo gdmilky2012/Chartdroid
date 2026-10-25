@@ -141,7 +141,7 @@ class IsoGen private constructor(
     private var lastArk: SubBlob? = null
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
-    fun arkParts(progress: (String) -> Unit): List<Blob> {
+    fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true): List<Blob> {
         val out = ArrayList<Blob>()
         for ((i, n) in arkNames.withIndex()) {
             val (lba, size) = recInfo(n)
@@ -152,6 +152,7 @@ class IsoGen private constructor(
                 lastArk = sb
                 out.add(sb)
             } else {
+                if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
                 // pindahkan ke akhir image
                 progress("ARK bukan berkas terakhir di ISO; menyalin ke akhir image (butuh ruang kosong sebesar ARK)…")
                 val newStart = roundUp(iso.length())
@@ -164,6 +165,9 @@ class IsoGen private constructor(
                     progress("Menyalin ARK… ${done * 100 / size}%")
                 }
                 setRec(n, newStart / SS, size)
+                val relEnd = roundUp(newStart + size)
+                if (iso.length() < relEnd) iso.write(relEnd - 1, byteArrayOf(0))
+                setVolumeSectors(relEnd / SS)
                 val sb = SubBlob(iso, newStart, size)
                 lastArk = sb
                 out.add(sb)
@@ -190,7 +194,12 @@ class IsoGen private constructor(
         }
         // pad akhir ke kelipatan sektor dan perbarui ukuran volume
         if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
-        val sectors = end / SS
+        setVolumeSectors(end / SS)
+        ark.len = lastArkSize
+    }
+
+    /** Tulis ukuran volume (dalam sektor) ke semua descriptor PVD/SVD. */
+    fun setVolumeSectors(sectors: Long) {
         var vd = 16L
         while (vd < 64) {
             val sec = iso.read(vd * SS, 8)
@@ -205,6 +214,98 @@ class IsoGen private constructor(
             }
             vd++
         }
-        ark.len = lastArkSize
+    }
+
+    private fun volumeSectors(): Long {
+        val sec = iso.read(16L * SS, 88)
+        return ByteBuffer.wrap(sec, 80, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+    }
+
+    /** Periksa konsistensi; kembalikan daftar masalah (kosong = baik). */
+    fun verify(expectPaths: List<String>): List<String> {
+        val problems = ArrayList<String>()
+        val len = iso.length()
+        val need = roundUp(len) / SS
+        val vol = volumeSectors()
+        if (vol != need) problems.add("Ukuran volume di PVD = $vol sektor, ukuran file = $need sektor")
+        val names = listOf(hdrName) + arkNames
+        for (n in names) {
+            val (lba, size) = recInfo(n)
+            if (lba * SS + size > len) problems.add("$n: extent (${lba * SS + size}) melewati akhir file ($len)")
+        }
+        try {
+            val ark = Ark.open(readHdr(), arkParts({}, false))
+            val total = ark.partSizes.sum()
+            for ((i, n) in arkNames.withIndex()) {
+                val (_, size) = recInfo(n)
+                if (ark.partSizes[i] > size) problems.add("$n: ukuran di HDR (${ark.partSizes[i]}) > ukuran di ISO ($size)")
+            }
+            for (e in ark.entries) if (e.offset + e.size > total) problems.add("Entri ${e.path} di luar ARK")
+            for (p in expectPaths) {
+                val e = ark.find(p)
+                if (e == null) problems.add("Entri $p tidak ada di HDR") else ark.read(e)
+            }
+            val sd = ark.find("config/gen/songs.dtb")
+            if (sd == null) problems.add("songs.dtb tidak ada") else Dtb.parseAny(ark.read(sd))
+        } catch (e: Exception) {
+            problems.add("Gagal membaca ARK/HDR: ${e.message}")
+        }
+        return problems
+    }
+
+    /** Perbaiki ukuran volume agar sama dengan ukuran file (aman bila file bertambah di akhir). */
+    fun repairVolumeSize() { setVolumeSectors(roundUp(iso.length()) / SS) }
+
+    fun describe(): String {
+        val sb = StringBuilder()
+        val len = iso.length()
+        sb.append("Ukuran file: $len byte (${roundUp(len) / SS} sektor)\n")
+        sb.append("Ukuran volume di PVD: ${volumeSectors()} sektor\n")
+        for (n in listOf(hdrName) + arkNames) {
+            val (lba, size) = recInfo(n)
+            sb.append("$n: sektor $lba, $size byte, berakhir di ${lba * SS + size}\n")
+        }
+        val p = verify(emptyList())
+        if (p.isEmpty()) sb.append("Struktur ISO/HDR/ARK tampak konsisten.\n") else p.forEach { sb.append("• $it\n") }
+        return sb.toString()
+    }
+}
+
+/** Jurnal perubahan ISO: menyimpan isi asli sebelum ditimpa supaya bisa dipulihkan. */
+class JournalBlob(private val base: Blob, private val out: java.io.DataOutputStream) : Blob {
+    private val origLen = base.length()
+    init { out.writeLong(origLen); out.flush() }
+    override fun length(): Long = base.length()
+    override fun read(pos: Long, len: Int): ByteArray = base.read(pos, len)
+    override fun write(pos: Long, data: ByteArray) {
+        if (pos < origLen) {
+            val n = minOf(data.size.toLong(), origLen - pos).toInt()
+            val old = base.read(pos, n)
+            out.writeLong(pos); out.writeInt(n); out.write(old); out.flush()
+        }
+        base.write(pos, data)
+    }
+    override fun truncate(len: Long) = base.truncate(len)
+
+    companion object {
+        /** Terapkan jurnal (urutan terbalik) lalu potong ke ukuran asli. */
+        fun restore(base: Blob, inp: java.io.InputStream) {
+            val din = java.io.DataInputStream(java.io.BufferedInputStream(inp))
+            val origLen = din.readLong()
+            class R(val pos: Long, val data: ByteArray)
+            val recs = ArrayList<R>()
+            try {
+                while (true) {
+                    val pos = din.readLong()
+                    val n = din.readInt()
+                    val d = ByteArray(n)
+                    din.readFully(d)
+                    recs.add(R(pos, d))
+                }
+            } catch (e: java.io.EOFException) {
+            }
+            for (r in recs.reversed()) base.write(r.pos, r.data)
+            base.truncate(origLen)
+        }
     }
 }

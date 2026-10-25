@@ -23,3 +23,7 @@ data ARK hanya ditambah di akhir. Belum ada: album art, berkas lipsync `.voc`, t
 Tambahan v0.6 (v0.6.1: DTB terenkripsi GH2 didukung): target bisa langsung **file ISO** PS2 (ISO9660 ditambal di HP: ARK diperpanjang/dipindah ke akhir image,
 HDR dan ukuran volume diperbarui), dan **pasang banyak lagu** sekaligus dari folder gaya Clone Hero
 (File > "Pasang BANYAK lagu ke GH2 (folder)…"). Buat salinan ISO sebelum memasang.
+
+v0.6.2: pemasangan ISO memakai jurnal (isi asli yang ditimpa disimpan, rollback otomatis bila gagal/verifikasi gagal),
+ukuran volume ISO diperbarui segera setelah ARK dipindah, verifikasi HDR/ARK/ISO setelah menulis, dan menu
+File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum diaktifkan di Gradle.

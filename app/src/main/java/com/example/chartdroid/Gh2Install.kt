@@ -183,6 +183,7 @@ class SafBlob(ctx: Context, uri: Uri) : Blob, AutoCloseable {
         var p = pos
         while (bb.hasRemaining()) p += fout.channel.write(bb, p).toLong()
     }
+    override fun truncate(len: Long) { fout.channel.truncate(len) }
     fun flush() { try { fout.channel.force(true) } catch (e: Exception) {} }
     override fun close() { flush(); try { fin.close() } catch (e: Exception) {}; try { fout.close() } catch (e: Exception) {}; try { pfd.close() } catch (e: Exception) {} }
 }
@@ -287,18 +288,34 @@ object Gh2Installer {
         log: (String) -> Unit, cancelled: () -> Boolean
     ): String {
         val closers = ArrayList<SafBlob>()
+        var journalOut: java.io.DataOutputStream? = null
+        var journalFile: File? = null
+        var isoRaw: SafBlob? = null
+        var isoGen: IsoGen? = null
         try {
             val ark: Ark
             val commit: (Ark) -> Unit
             if (isIso) {
                 log("Membuka ISO…")
-                val sb = SafBlob(ctx, target)
-                closers.add(sb)
+                val raw = SafBlob(ctx, target)
+                closers.add(raw)
+                val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+                val jf = File(dir, "gh2_iso_journal_${System.currentTimeMillis()}.bin")
+                val jos = java.io.DataOutputStream(FileOutputStream(jf))
+                journalOut = jos
+                journalFile = jf
+                val sb = JournalBlob(raw, jos)
+                isoRaw = raw
                 val g = IsoGen.open(sb)
                 val hdr = g.readHdr()
                 val parts = g.arkParts(log)
                 ark = Ark.open(hdr, parts)
-                commit = { a -> sb.flush(); g.commit(a.hdrBytes(), a.partSizes.last()); sb.flush() }
+                commit = { a ->
+                    raw.flush()
+                    g.commit(a.hdrBytes(), a.partSizes.last())
+                    raw.flush()
+                }
+                isoGen = g
             } else {
                 val kids = children(ctx, target)
                 val hdrChild = kids.firstOrNull { it.name.endsWith(".hdr", true) }
@@ -350,14 +367,56 @@ object Gh2Installer {
             warns.addAll(Gh2.installDtbs(ark, items))
             log("Menulis HDR…")
             commit(ark)
+            val gg = isoGen
+            if (gg != null) {
+                log("Memeriksa ISO hasil…")
+                val problems = gg.verify(items.map { "songs/${it.meta.symbol}/${it.meta.symbol}.mid" })
+                if (problems.isNotEmpty()) throw IllegalStateException("Verifikasi ISO gagal:\n" + problems.joinToString("\n") { "• $it" })
+            }
             val sb = StringBuilder()
             sb.append("Selesai: ${items.size} lagu dipasang").append(if (failed.isNotEmpty()) ", ${failed.size} gagal/dilewati" else "").append(".\n")
             for (it in items) sb.append("✓ ${it.meta.title} (${it.meta.symbol})\n")
             for (f in failed) sb.append("✗ $f\n")
             for (w in warns.distinct()) sb.append("• $w\n")
             return sb.toString()
+        } catch (e: Throwable) {
+            val jf = journalFile
+            val raw = isoRaw
+            if (jf != null && raw != null) {
+                try {
+                    journalOut?.close()
+                    jf.inputStream().use { JournalBlob.restore(raw, it) }
+                    raw.flush()
+                } catch (x: Throwable) {
+                    throw IllegalStateException((e.message ?: e.javaClass.simpleName) + "\n(PERINGATAN: pemulihan otomatis ISO gagal: ${x.message}. Jurnal: ${jf.absolutePath})")
+                }
+                throw IllegalStateException((e.message ?: e.javaClass.simpleName) + "\nISO sudah dikembalikan ke kondisi semula.")
+            }
+            throw e
         } finally {
+            try { journalOut?.close() } catch (e: Exception) {}
             closers.forEach { try { it.close() } catch (e: Exception) {} }
+        }
+    }
+
+    /** Daftar jurnal pemulihan ISO (terbaru dulu). */
+    fun journals(ctx: Context): List<File> {
+        val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+        return (dir.listFiles { f -> f.name.startsWith("gh2_iso_journal_") } ?: emptyArray<File>()).sortedByDescending { it.name }
+    }
+
+    fun restoreIso(ctx: Context, iso: Uri, journal: File) {
+        SafBlob(ctx, iso).use { b ->
+            journal.inputStream().use { JournalBlob.restore(b, it) }
+            b.flush()
+        }
+    }
+
+    fun diagnoseIso(ctx: Context, iso: Uri, repair: Boolean): String {
+        SafBlob(ctx, iso).use { b ->
+            val g = IsoGen.open(b)
+            if (repair) { g.repairVolumeSize(); b.flush() }
+            return (if (repair) "Ukuran volume diperbaiki.\n" else "") + g.describe()
         }
     }
 }

@@ -205,6 +205,7 @@ interface Blob {
     fun length(): Long
     fun read(pos: Long, len: Int): ByteArray
     fun write(pos: Long, data: ByteArray)
+    fun truncate(len: Long) {}
 }
 
 class ArkEntry(var offset: Long, var name: String, var folder: String?, var size: Long, var inflate: Long) {

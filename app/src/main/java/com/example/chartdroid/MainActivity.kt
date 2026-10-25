@@ -133,6 +133,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private val RQ_GH2 = 8
     private val RQ_GH2_ISO = 10
     private val RQ_GH2_SRC = 11
+    private val RQ_GH2_CHECK = 12
 
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val rq = pending
@@ -167,6 +168,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 RQ_GH2 -> runGh2Jobs(uri, false)
                 RQ_GH2_ISO -> runGh2Jobs(uri, true)
                 RQ_GH2_SRC -> scanGh2Folder(uri)
+                RQ_GH2_CHECK -> runGh2Check(uri)
                 RQ_EXPORT_MID -> {
                     val os = contentResolver.openOutputStream(uri, "wt") ?: throw IllegalStateException("tidak bisa menulis")
                     os.use { it.write(MidiIO.write(song)) }
@@ -698,6 +700,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Ekspor ke folder Clone Hero…" to { launchTree(RQ_EXPORT) },
                 "Pasang ke GH2 Deluxe (PS2)…" to { gh2Dialog() },
                 "Pasang BANYAK lagu ke GH2 (folder)…" to { launchTree(RQ_GH2_SRC) },
+                "Periksa / pulihkan ISO GH2…" to { gh2CheckDialog() },
                 "Pulihkan autosave" to { restoreAutosave() }
             )
             "Edit" -> listOf(
@@ -2376,6 +2379,48 @@ TIPS
                 try { dlg.dismiss() } catch (e: Exception) {}
                 AlertDialog.Builder(this).setTitle("Hasil").setMessage(result).setPositiveButton("OK", null).show()
             }
+        }.start()
+    }
+
+    private var gh2CheckMode = 0
+
+    private fun gh2CheckDialog() {
+        val items = arrayOf("Periksa ISO (hanya baca)", "Periksa + perbaiki ukuran volume", "Pulihkan ISO ke kondisi sebelum dipasangi (jurnal terakhir)")
+        AlertDialog.Builder(this)
+            .setTitle("ISO GH2")
+            .setItems(items) { _, which ->
+                gh2CheckMode = which
+                pending = RQ_GH2_CHECK
+                val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+                i.addCategory(Intent.CATEGORY_OPENABLE)
+                i.type = "*/*"
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                launcher.launch(i)
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun runGh2Check(iso: Uri) {
+        val mode = gh2CheckMode
+        Thread {
+            val msg = try {
+                when (mode) {
+                    0 -> Gh2Installer.diagnoseIso(this, iso, false)
+                    1 -> Gh2Installer.diagnoseIso(this, iso, true)
+                    else -> {
+                        val j = Gh2Installer.journals(this)
+                        if (j.isEmpty()) "Tidak ada jurnal pemulihan di perangkat ini."
+                        else {
+                            Gh2Installer.restoreIso(this, iso, j.first())
+                            "ISO dipulihkan memakai ${j.first().name}.\n" + Gh2Installer.diagnoseIso(this, iso, false)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                "GAGAL: ${e.message ?: e.javaClass.simpleName}"
+            }
+            runOnUiThread { AlertDialog.Builder(this).setTitle("Hasil").setMessage(msg).setPositiveButton("OK", null).show() }
         }.start()
     }
 }

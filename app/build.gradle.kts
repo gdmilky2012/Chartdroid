@@ -13,7 +13,10 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1"
+        // RB3 PS3 (belum aktif): aktifkan blok ndk + externalNativeBuild di bawah bila sudah siap.
+        // ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
+    // externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt") } }
 
     buildTypes {
         release {
