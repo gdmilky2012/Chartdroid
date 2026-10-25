@@ -11,3 +11,11 @@ buka folder lagu / ekspor folder Clone Hero (notes.chart + song.ini + audio); au
 Terinspirasi dari Moonscraper Chart Editor (c) Alexander Ong, BSD-3-Clause
 (https://github.com/FireFox2000000/moonscraper-chart-editor). ChartDroid bukan produk resmi Moonscraper
 dan memakai nama serta ikon sendiri.
+
+## Pasang ke GH2 Deluxe (PS2) — eksperimental
+
+File > "Pasang ke GH2 Deluxe (PS2)…" mengonversi chart 5-fret + audio yang sedang dimuat menjadi lagu Guitar Hero II dan
+menyuntikkannya ke folder `GEN` hasil ekstrak ISO GH2 Deluxe Custom Edition (`MAIN.HDR` + `MAIN_0.ARK`).
+Alur mengikuti Onyx Music Game Toolkit (mtolly/onyx): MIDI GH2 (PART GUITAR/RHYTHM|BASS/EVENTS), audio VGS (PS2 ADPCM),
+edit `songs.dtb`, `coop_max_scores.dtb`, `store.dtb` (bonus, harga 0), `locale.dtb`. HDR dicadangkan ke `MAIN.HDR.bak`;
+data ARK hanya ditambah di akhir. Belum ada: album art, berkas lipsync `.voc`, tier setlist. Setelah itu ISO dibangun ulang di PC.

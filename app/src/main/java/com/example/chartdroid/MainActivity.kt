@@ -25,6 +25,8 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
@@ -128,6 +130,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
     private val RQ_EXPORT = 5
     private val RQ_ADD_STEM = 6
     private val RQ_EXPORT_MID = 7
+    private val RQ_GH2 = 8
 
     private val launcher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val rq = pending
@@ -159,6 +162,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                     saveChart()
                 }
                 RQ_EXPORT -> exportFolder(uri)
+                RQ_GH2 -> runGh2Install(uri)
                 RQ_EXPORT_MID -> {
                     val os = contentResolver.openOutputStream(uri, "wt") ?: throw IllegalStateException("tidak bisa menulis")
                     os.use { it.write(MidiIO.write(song)) }
@@ -688,6 +692,7 @@ class MainActivity : AppCompatActivity(), HighwayView.Listener {
                 "Simpan sebagai…" to { saveAs() },
                 "Ekspor .mid…" to { exportMid() },
                 "Ekspor ke folder Clone Hero…" to { launchTree(RQ_EXPORT) },
+                "Pasang ke GH2 Deluxe (PS2)…" to { gh2Dialog() },
                 "Pulihkan autosave" to { restoreAutosave() }
             )
             "Edit" -> listOf(
@@ -2122,5 +2127,139 @@ TIPS
         metronomeHi?.release()
         metronomeLo?.release()
         clap?.release()
+    }
+
+    // ===================== Guitar Hero II Deluxe =====================
+    private var gh2Meta = Gh2.Meta()
+    private var gh2Lead = ""
+    private var gh2Coop: String? = null
+
+    private fun gh2Dialog() {
+        val parts = Gh2.availableParts(song)
+        if (parts.isEmpty()) {
+            toast("Chart belum punya track 5-fret (Guitar/Bass/Rhythm) berisi not")
+            return
+        }
+        if (gh2Meta.symbol.isEmpty()) {
+            gh2Meta.symbol = Gh2.sanitizeSymbol(song.name)
+            gh2Meta.title = song.name
+            gh2Meta.artist = song.meta["Artist"] ?: ""
+            gh2Meta.album = song.meta["Album"] ?: ""
+            gh2Meta.year = song.meta["Year"] ?: ""
+            gh2Meta.genre = song.meta["Genre"] ?: ""
+            gh2Meta.author = song.meta["Charter"] ?: ""
+            gh2Meta.guitarRank = 3
+            gh2Meta.bassRank = 3
+        }
+        val sv = ScrollView(this)
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.setPadding(dp(16), dp(8), dp(16), dp(8))
+        sv.addView(box)
+        fun label(t: String) {
+            val tv = TextView(this)
+            tv.text = t
+            tv.textSize = 12f
+            box.addView(tv)
+        }
+        fun field(t: String, v: String): EditText {
+            label(t)
+            val e = EditText(this)
+            e.setText(v)
+            e.setSingleLine(true)
+            box.addView(e)
+            return e
+        }
+        val info = TextView(this)
+        info.text = "Memasang lagu ini ke folder GEN hasil ekstrak ISO GH2 Deluxe CE (berisi MAIN.HDR dan MAIN_0.ARK). " +
+            "HDR dicadangkan sebagai MAIN.HDR.bak. Audio yang sedang dimuat (semua stem) dipakai sebagai band."
+        info.textSize = 12f
+        box.addView(info)
+        val eSym = field("Simbol (huruf kecil/angka, jadi nama folder lagu)", gh2Meta.symbol)
+        val eTitle = field("Judul", gh2Meta.title)
+        val eArtist = field("Artis", gh2Meta.artist)
+        val eAlbum = field("Album", gh2Meta.album)
+        val eAuthor = field("Pembuat chart (author)", gh2Meta.author)
+        val eYear = field("Tahun", gh2Meta.year)
+        val eGenre = field("Genre", gh2Meta.genre)
+        val eGr = field("Tingkat gitar (0-6, -1 = tidak ada)", gh2Meta.guitarRank.toString())
+        val eBr = field("Tingkat bass/rhythm (0-6, -1 = tidak ada)", gh2Meta.bassRank.toString())
+        val names = parts.map { ChartIO.instruments[it] ?: it }
+        label("Part lead (PART GUITAR)")
+        val spLead = Spinner(this)
+        spLead.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
+        spLead.setSelection(max(0, parts.indexOf(gh2Lead)))
+        box.addView(spLead)
+        label("Part co-op")
+        val coopNames = listOf("(salin dari lead)") + names
+        val spCoop = Spinner(this)
+        spCoop.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, coopNames)
+        spCoop.setSelection(if (gh2Coop == null) 0 else 1 + max(0, parts.indexOf(gh2Coop)))
+        box.addView(spCoop)
+        label("Jenis co-op")
+        val spType = Spinner(this)
+        spType.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, listOf("Rhythm", "Bass"))
+        spType.setSelection(if (gh2Meta.coop == "bass") 1 else 0)
+        box.addView(spType)
+        val cbDx = CheckBox(this)
+        cbDx.text = "Format GH2 Deluxe (metadata author/album/dll.)"
+        cbDx.isChecked = gh2Meta.deluxe
+        box.addView(cbDx)
+        val cbCover = CheckBox(this)
+        cbCover.text = "Tampilkan 'performed by' (cover)"
+        cbCover.isChecked = gh2Meta.cover
+        box.addView(cbCover)
+        AlertDialog.Builder(this)
+            .setTitle("Pasang ke GH2 Deluxe")
+            .setView(sv)
+            .setNegativeButton("Batal", null)
+            .setPositiveButton("Pilih folder GEN…") { _, _ ->
+                gh2Meta.symbol = Gh2.sanitizeSymbol(eSym.text.toString())
+                gh2Meta.title = eTitle.text.toString().ifBlank { "Lagu" }
+                gh2Meta.artist = eArtist.text.toString()
+                gh2Meta.album = eAlbum.text.toString()
+                gh2Meta.author = eAuthor.text.toString()
+                gh2Meta.year = eYear.text.toString()
+                gh2Meta.genre = eGenre.text.toString()
+                gh2Meta.guitarRank = eGr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
+                gh2Meta.bassRank = eBr.text.toString().toIntOrNull()?.coerceIn(-1, 6) ?: 3
+                gh2Meta.coop = if (spType.selectedItemPosition == 1) "bass" else "rhythm"
+                gh2Meta.deluxe = cbDx.isChecked
+                gh2Meta.cover = cbCover.isChecked
+                gh2Lead = parts[spLead.selectedItemPosition]
+                gh2Coop = if (spCoop.selectedItemPosition == 0) null else parts[spCoop.selectedItemPosition - 1]
+                launchTree(RQ_GH2)
+            }
+            .show()
+    }
+
+    private fun runGh2Install(tree: Uri) {
+        val sng = song
+        val meta = gh2Meta
+        val lead = gh2Lead.ifEmpty { Gh2.availableParts(sng).first() }
+        val coop = gh2Coop
+        val audio = stems.map { it.uri }
+        val tv = TextView(this)
+        tv.setPadding(dp(20), dp(16), dp(20), dp(16))
+        tv.text = "Memulai…"
+        val cancel = java.util.concurrent.atomic.AtomicBoolean(false)
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Memasang ke GH2")
+            .setView(tv)
+            .setCancelable(false)
+            .setNegativeButton("Batal") { _, _ -> cancel.set(true) }
+            .show()
+        Thread {
+            var result: String
+            try {
+                result = Gh2Installer.install(this, tree, sng, meta, lead, coop, audio, { m -> runOnUiThread { tv.text = m } }, { cancel.get() })
+            } catch (e: Throwable) {
+                result = "GAGAL: ${e.message ?: e.javaClass.simpleName}\nHDR asli tidak diubah bila pesan ini muncul sebelum langkah 'Menulis HDR'."
+            }
+            runOnUiThread {
+                try { dlg.dismiss() } catch (e: Exception) {}
+                AlertDialog.Builder(this).setTitle("Hasil").setMessage(result).setPositiveButton("OK", null).show()
+            }
+        }.start()
     }
 }
