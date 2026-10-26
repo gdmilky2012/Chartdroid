@@ -139,6 +139,10 @@ class IsoGen private constructor(
     }
 
     private var lastArk: SubBlob? = null
+<<<<<<< HEAD
+=======
+    private var hdrOverwritten = false
+>>>>>>> 58c523f (v0.6.3)
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
     fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true): List<Blob> {
@@ -147,7 +151,20 @@ class IsoGen private constructor(
             val (lba, size) = recInfo(n)
             if (i < arkNames.size - 1) { out.add(SubBlob(iso, lba * SS, size)); continue }
             val end = roundUp(lba * SS + size)
+<<<<<<< HEAD
             if (end >= roundUp(iso.length())) {
+=======
+            val (hl, hs) = recInfo(hdrName)
+            val hdrIsTail = hl * SS == end && roundUp(hl * SS + hs) >= roundUp(iso.length())
+            if (hdrIsTail) {
+                // pola dari pemasangan sebelumnya: ARK lalu HDR di ujung image. HDR lama boleh ditimpa
+                // (isinya sudah dibaca ke memori; jurnal menyimpan aslinya), HDR baru ditulis di akhir.
+                hdrOverwritten = true
+                val sb = SubBlob(iso, lba * SS, size)
+                lastArk = sb
+                out.add(sb)
+            } else if (end >= roundUp(iso.length())) {
+>>>>>>> 58c523f (v0.6.3)
                 val sb = SubBlob(iso, lba * SS, size)
                 lastArk = sb
                 out.add(sb)
@@ -182,6 +199,7 @@ class IsoGen private constructor(
         val ark = lastArk ?: throw IllegalStateException("arkParts() belum dipanggil")
         val (lba, _) = recInfo(name)
         setRec(name, lba, lastArkSize)
+<<<<<<< HEAD
         var end = roundUp(maxOf(iso.length(), lba * SS + lastArkSize))
         val (hl, hs) = recInfo(hdrName)
         if (roundUp(hdr.size.toLong()) <= roundUp(hs)) {
@@ -191,6 +209,19 @@ class IsoGen private constructor(
             iso.write(end, hdr)
             setRec(hdrName, end / SS, hdr.size.toLong())
             end += roundUp(hdr.size.toLong())
+=======
+        val arkEnd = roundUp(lba * SS + lastArkSize)
+        var end = roundUp(maxOf(iso.length(), arkEnd))
+        val (hl, hs) = recInfo(hdrName)
+        if (!hdrOverwritten && roundUp(hdr.size.toLong()) <= roundUp(hs)) {
+            iso.write(hl * SS, hdr)
+            setRec(hdrName, hl, hdr.size.toLong())
+        } else {
+            val pos = if (hdrOverwritten) arkEnd else end
+            iso.write(pos, hdr)
+            setRec(hdrName, pos / SS, hdr.size.toLong())
+            end = maxOf(end, pos + roundUp(hdr.size.toLong()))
+>>>>>>> 58c523f (v0.6.3)
         }
         // pad akhir ke kelipatan sektor dan perbarui ukuran volume
         if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
