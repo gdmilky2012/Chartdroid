@@ -138,13 +138,6 @@ class IsoGen private constructor(
         return iso.read(lba * SS, size.toInt())
     }
 
-<<<<<<< HEAD
-    private var lastArk: SubBlob? = null
-<<<<<<< HEAD
-=======
-    private var hdrOverwritten = false
->>>>>>> 58c523f (v0.6.3)
-=======
     private class TailFile(val size: Long, val recs: List<Long>, val tmp: java.io.File)
     private var tail: List<TailFile> = emptyList()
 
@@ -235,7 +228,6 @@ class IsoGen private constructor(
 
     private var lastArk: SubBlob? = null
     private var hdrOverwritten = false
->>>>>>> b2ef2b1 (v0.6.3)
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
     fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true): List<Blob> {
@@ -244,12 +236,6 @@ class IsoGen private constructor(
             val (lba, size) = recInfo(n)
             if (i < arkNames.size - 1) { out.add(SubBlob(iso, lba * SS, size)); continue }
             val end = roundUp(lba * SS + size)
-<<<<<<< HEAD
-<<<<<<< HEAD
-            if (end >= roundUp(iso.length())) {
-=======
-=======
->>>>>>> b2ef2b1 (v0.6.3)
             val (hl, hs) = recInfo(hdrName)
             val hdrIsTail = hl * SS == end && roundUp(hl * SS + hs) >= roundUp(iso.length())
             if (hdrIsTail) {
@@ -260,17 +246,11 @@ class IsoGen private constructor(
                 lastArk = sb
                 out.add(sb)
             } else if (end >= roundUp(iso.length())) {
-<<<<<<< HEAD
->>>>>>> 58c523f (v0.6.3)
-=======
->>>>>>> b2ef2b1 (v0.6.3)
                 val sb = SubBlob(iso, lba * SS, size)
                 lastArk = sb
                 out.add(sb)
             } else {
                 if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
-<<<<<<< HEAD
-=======
                 val tl = planTail(lba, size, progress)
                 if (tl != null) {
                     tail = tl
@@ -282,7 +262,6 @@ class IsoGen private constructor(
                     out.add(sb)
                     continue
                 }
->>>>>>> b2ef2b1 (v0.6.3)
                 // pindahkan ke akhir image
                 progress("ARK bukan berkas terakhir di ISO; menyalin ke akhir image (butuh ruang kosong sebesar ARK)…")
                 val newStart = roundUp(iso.length())
@@ -312,25 +291,9 @@ class IsoGen private constructor(
         val ark = lastArk ?: throw IllegalStateException("arkParts() belum dipanggil")
         val (lba, _) = recInfo(name)
         setRec(name, lba, lastArkSize)
-<<<<<<< HEAD
-<<<<<<< HEAD
-        var end = roundUp(maxOf(iso.length(), lba * SS + lastArkSize))
-        val (hl, hs) = recInfo(hdrName)
-        if (roundUp(hdr.size.toLong()) <= roundUp(hs)) {
-            iso.write(hl * SS, hdr)
-            setRec(hdrName, hl, hdr.size.toLong())
-        } else {
-            iso.write(end, hdr)
-            setRec(hdrName, end / SS, hdr.size.toLong())
-            end += roundUp(hdr.size.toLong())
-=======
-        val arkEnd = roundUp(lba * SS + lastArkSize)
-        var end = roundUp(maxOf(iso.length(), arkEnd))
-=======
         val arkEnd = roundUp(lba * SS + lastArkSize)
         var end = roundUp(maxOf(iso.length(), arkEnd))
         var cursor = arkEnd
->>>>>>> b2ef2b1 (v0.6.3)
         val (hl, hs) = recInfo(hdrName)
         if (!hdrOverwritten && roundUp(hdr.size.toLong()) <= roundUp(hs)) {
             iso.write(hl * SS, hdr)
@@ -339,11 +302,6 @@ class IsoGen private constructor(
             val pos = if (hdrOverwritten) arkEnd else end
             iso.write(pos, hdr)
             setRec(hdrName, pos / SS, hdr.size.toLong())
-<<<<<<< HEAD
-            end = maxOf(end, pos + roundUp(hdr.size.toLong()))
->>>>>>> 58c523f (v0.6.3)
-        }
-=======
             cursor = pos + roundUp(hdr.size.toLong())
             end = maxOf(end, cursor)
         }
@@ -366,7 +324,6 @@ class IsoGen private constructor(
         }
         tail = emptyList()
         end = maxOf(end, cursor)
->>>>>>> b2ef2b1 (v0.6.3)
         // pad akhir ke kelipatan sektor dan perbarui ukuran volume
         if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
         setVolumeSectors(end / SS)

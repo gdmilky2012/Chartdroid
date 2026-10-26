@@ -27,18 +27,9 @@ HDR dan ukuran volume diperbarui), dan **pasang banyak lagu** sekaligus dari fol
 v0.6.2: pemasangan ISO memakai jurnal (isi asli yang ditimpa disimpan, rollback otomatis bila gagal/verifikasi gagal),
 ukuran volume ISO diperbarui segera setelah ARK dipindah, verifikasi HDR/ARK/ISO setelah menulis, dan menu
 File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum diaktifkan di Gradle.
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-=======
->>>>>>> b2ef2b1 (v0.6.3)
 
 ### v0.6.3 — impor GH2 lebih cepat
 - Dekode audio per-stem paralel, campur PCM per potongan, enkoder VAG tanpa alokasi per blok.
 - Banyak lagu: disiapkan paralel (maks 3), ditulis ke ARK berurutan.
 - Pemasangan ISO berikutnya tidak menyalin ulang seluruh ARK (HDR dipindah ke ujung image).
-<<<<<<< HEAD
->>>>>>> 58c523f (v0.6.3)
-=======
 - Pemasangan ke ISO: bila hanya berkas kecil yang berada setelah ARK, berkas itu dipindah ke ujung image (bukan menyalin ulang seluruh ARK), jadi ISO hanya bertambah sebesar lagu baru.
->>>>>>> b2ef2b1 (v0.6.3)

@@ -352,12 +352,6 @@ object Vag {
     )
 
     /** State: [state1, state2, state1a, state2a]. */
-<<<<<<< HEAD
-<<<<<<< HEAD
-    class State { val s = DoubleArray(4) }
-=======
-=======
->>>>>>> b2ef2b1 (v0.6.3)
     class State {
         val s = DoubleArray(4)
         val buffer = Array(28) { DoubleArray(5) }
@@ -365,30 +359,14 @@ object Vag {
         val dSamples = DoubleArray(28)
         val four = IntArray(28)
     }
-<<<<<<< HEAD
->>>>>>> 58c523f (v0.6.3)
-=======
->>>>>>> b2ef2b1 (v0.6.3)
 
     /** Port encode_vag.c (Guitar Wizard / Onyx). in: 28 sampel. Mengembalikan 16 byte. */
     fun encodeBlock(inp: ShortArray, flag: Int, st: State): ByteArray {
         val out = ByteArray(16)
         out[1] = flag.toByte()
-<<<<<<< HEAD
-<<<<<<< HEAD
-        val buffer = Array(28) { DoubleArray(5) }
-        var min = 1e10
-        val mx = DoubleArray(5)
-=======
         val buffer = st.buffer
         var min = 1e10
         val mx = st.mx
->>>>>>> 58c523f (v0.6.3)
-=======
-        val buffer = st.buffer
-        var min = 1e10
-        val mx = st.mx
->>>>>>> b2ef2b1 (v0.6.3)
         var predictNr = 0
         var s1 = 0.0
         var s2 = 0.0
@@ -419,17 +397,8 @@ object Vag {
         }
         st.s[0] = s1
         st.s[1] = s2
-<<<<<<< HEAD
-<<<<<<< HEAD
-        val dSamples = DoubleArray(28) { buffer[it][predictNr] }
-=======
         val dSamples = st.dSamples
         for (i in 0 until 28) dSamples[i] = buffer[i][predictNr]
->>>>>>> 58c523f (v0.6.3)
-=======
-        val dSamples = st.dSamples
-        for (i in 0 until 28) dSamples[i] = buffer[i][predictNr]
->>>>>>> b2ef2b1 (v0.6.3)
         val min2 = min.toInt()
         var shiftMask = 0x4000
         var shiftFactor = 0
@@ -440,15 +409,7 @@ object Vag {
         }
         var a0 = st.s[2]
         var a1 = st.s[3]
-<<<<<<< HEAD
-<<<<<<< HEAD
-        val four = IntArray(28)
-=======
         val four = st.four
->>>>>>> 58c523f (v0.6.3)
-=======
-        val four = st.four
->>>>>>> b2ef2b1 (v0.6.3)
         for (i in 0 until 28) {
             val s0a = dSamples[i] + a0 * filter[predictNr][0] + a1 * filter[predictNr][1]
             val ds = s0a * (1 shl shiftFactor).toDouble()
