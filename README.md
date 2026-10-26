@@ -33,3 +33,4 @@ File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum dia
 - Banyak lagu: disiapkan paralel (maks 3), ditulis ke ARK berurutan.
 - Pemasangan ISO berikutnya tidak menyalin ulang seluruh ARK (HDR dipindah ke ujung image).
 - Pemasangan ke ISO: bila hanya berkas kecil yang berada setelah ARK, berkas itu dipindah ke ujung image (bukan menyalin ulang seluruh ARK), jadi ISO hanya bertambah sebesar lagu baru.
+- v0.6.4: "Periksa ISO" kini menguji baca→tulis ulang DTB (harus IDENTIK) dan menyimpan salinan DTB asli ke folder gh2_dtb untuk analisis.

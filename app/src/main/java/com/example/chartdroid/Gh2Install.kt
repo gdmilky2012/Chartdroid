@@ -467,8 +467,33 @@ object Gh2Installer {
         SafBlob(ctx, iso).use { b ->
             val g = IsoGen.open(b)
             if (repair) { g.repairVolumeSize(); b.flush() }
-            return (if (repair) "Ukuran volume diperbaiki.\n" else "") + g.describe()
+            val sb = StringBuilder()
+            if (repair) sb.append("Ukuran volume diperbaiki.\n")
+            sb.append(g.describe())
+            try { sb.append("\n\n").append(dtbReport(ctx, g)) } catch (e: Throwable) { sb.append("\n\nLaporan DTB gagal: ").append(e.message) }
+            return sb.toString()
         }
+    }
+
+    /** Uji keandalan penulis DTB pada data asli: baca lalu tulis ulang tanpa perubahan, bandingkan byte. Juga simpan salinan DTB. */
+    private fun dtbReport(ctx: Context, g: IsoGen): String {
+        val ark = Ark.open(g.readHdr(), g.arkParts({ }, false))
+        val dir = File(ctx.getExternalFilesDir(null), "gh2_dtb").also { it.mkdirs() }
+        val sb = StringBuilder("Uji DTB (baca → tulis ulang tanpa perubahan):\n")
+        for (p in listOf("config/gen/songs.dtb", "config/gen/coop_max_scores.dtb", "config/gen/store.dtb", "ui/eng/gen/locale.dtb")) {
+            val e = ark.find(p)
+            if (e == null) { sb.append("- $p: TIDAK ADA\n"); continue }
+            val raw = ark.read(e)
+            File(dir, p.replace('/', '_')).writeBytes(raw)
+            try {
+                val doc = Dtb.parseAny(raw)
+                val back = Dtb.writeAny(doc)
+                val same = back.contentEquals(raw)
+                sb.append("- $p: ${raw.size} B, enkripsi=${doc.crypt}, anak=${doc.root.size}, tulis-ulang ${if (same) "IDENTIK" else "BERBEDA (${back.size} B)"}\n")
+            } catch (t: Throwable) { sb.append("- $p: gagal dibaca: ${t.message}\n") }
+        }
+        sb.append("Salinan DTB asli disimpan di: ${dir.absolutePath}")
+        return sb.toString()
     }
 }
 
