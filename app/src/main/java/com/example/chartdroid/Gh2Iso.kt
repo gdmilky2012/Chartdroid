@@ -138,11 +138,104 @@ class IsoGen private constructor(
         return iso.read(lba * SS, size.toInt())
     }
 
+<<<<<<< HEAD
     private var lastArk: SubBlob? = null
 <<<<<<< HEAD
 =======
     private var hdrOverwritten = false
 >>>>>>> 58c523f (v0.6.3)
+=======
+    private class TailFile(val size: Long, val recs: List<Long>, val tmp: java.io.File)
+    private var tail: List<TailFile> = emptyList()
+
+    private fun setRecAt(pos: Long, lba: Long) {
+        val loc = ByteBuffer.allocate(8)
+        loc.order(ByteOrder.LITTLE_ENDIAN).putInt(0, lba.toInt())
+        loc.order(ByteOrder.BIG_ENDIAN).putInt(4, lba.toInt())
+        iso.write(pos + 2, loc.array())
+    }
+
+    /**
+     * Bila semua yang berada SETELAH ARK hanyalah berkas biasa yang kecil, pindahkan berkas itu (disimpan sementara)
+     * ke ujung image setelah ARK membesar, sehingga ARK tidak perlu disalin ulang dan ukuran ISO hanya bertambah
+     * sebesar lagu baru. Mengembalikan null bila tidak aman (ada direktori/path table setelah ARK, atau terlalu besar).
+     */
+    private fun planTail(arkLba: Long, arkSize: Long, progress: (String) -> Unit): List<TailFile>? {
+        val arkEndSec = (arkLba * SS + roundUp(arkSize)) / SS
+        val files = HashMap<Long, Pair<Long, MutableList<Long>>>()
+        var blocked = false
+        var vd = 16L
+        while (vd < 64 && !blocked) {
+            val sec = iso.read(vd * SS, SS)
+            if (String(sec, 1, 5, Charsets.ISO_8859_1) != "CD001") break
+            val type = sec[0].toInt() and 0xFF
+            if (type == 255) break
+            if (type == 1 || type == 2) {
+                val joliet = type == 2
+                val bb = ByteBuffer.wrap(sec)
+                val le = bb.order(ByteOrder.LITTLE_ENDIAN)
+                // path table
+                for (off in intArrayOf(140, 144)) {
+                    val pl = le.getInt(off).toLong() and 0xFFFFFFFFL
+                    if (pl != 0L && pl >= arkEndSec) blocked = true
+                }
+                val bg = ByteBuffer.wrap(sec).order(ByteOrder.BIG_ENDIAN)
+                for (off in intArrayOf(148, 152)) {
+                    val pl = bg.getInt(off).toLong() and 0xFFFFFFFFL
+                    if (pl != 0L && pl >= arkEndSec) blocked = true
+                }
+                val rootLba = le.getInt(156 + 2).toLong() and 0xFFFFFFFFL
+                val rootSize = le.getInt(156 + 10).toLong() and 0xFFFFFFFFL
+                if (rootLba >= arkEndSec) blocked = true
+                val seen = HashSet<Long>()
+                fun walk(lba: Long, size: Long) {
+                    if (blocked || !seen.add(lba)) return
+                    if (lba >= arkEndSec) { blocked = true; return }
+                    for (r in readDir(iso, lba, size, joliet)) {
+                        if (r.isDir) walk(r.lba, r.size)
+                        else if (r.lba >= arkEndSec && r.size > 0) {
+                            val e = files.getOrPut(r.lba) { r.size to ArrayList() }
+                            if (e.first != r.size) { blocked = true; return }
+                            e.second.add(r.recPos)
+                        } else if (r.lba >= arkEndSec) {
+                            // berkas kosong: lokasi tidak penting, tapi catat agar tidak menunjuk ke area yang ditimpa
+                            val e = files.getOrPut(r.lba) { 0L to ArrayList() }
+                            e.second.add(r.recPos)
+                        }
+                    }
+                }
+                walk(rootLba, rootSize)
+            }
+            vd++
+        }
+        if (blocked) return null
+        val total = files.values.sumOf { it.first }  // termasuk HDR (batas kasar)
+        if (total > minOf(maxOf(arkSize / 2, 1L shl 20), 512L shl 20)) return null
+        val hdrPos = trees.mapNotNull { it.recs[hdrName] }.toSet()
+        val out = ArrayList<TailFile>()
+        try {
+            for ((lba, e) in files.entries.sortedBy { it.key }) {
+                if (e.second.any { it in hdrPos }) continue  // HDR ditulis ulang oleh commit
+                val tmp = java.io.File.createTempFile("gh2tail", ".bin")
+                tmp.deleteOnExit()
+                java.io.FileOutputStream(tmp).use { fo ->
+                    var done = 0L
+                    while (done < e.first) {
+                        val n = minOf(4L shl 20, e.first - done).toInt()
+                        fo.write(iso.read(lba * SS + done, n))
+                        done += n
+                    }
+                }
+                out.add(TailFile(e.first, e.second, tmp))
+            }
+        } catch (t: Throwable) { out.forEach { it.tmp.delete() }; return null }
+        progress("Berkas setelah ARK (${out.size} berkas, ${total / 1024} KB) akan dipindah ke ujung image; ARK tidak perlu disalin ulang.")
+        return out
+    }
+
+    private var lastArk: SubBlob? = null
+    private var hdrOverwritten = false
+>>>>>>> b2ef2b1 (v0.6.3)
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
     fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true): List<Blob> {
@@ -152,8 +245,11 @@ class IsoGen private constructor(
             if (i < arkNames.size - 1) { out.add(SubBlob(iso, lba * SS, size)); continue }
             val end = roundUp(lba * SS + size)
 <<<<<<< HEAD
+<<<<<<< HEAD
             if (end >= roundUp(iso.length())) {
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             val (hl, hs) = recInfo(hdrName)
             val hdrIsTail = hl * SS == end && roundUp(hl * SS + hs) >= roundUp(iso.length())
             if (hdrIsTail) {
@@ -164,12 +260,29 @@ class IsoGen private constructor(
                 lastArk = sb
                 out.add(sb)
             } else if (end >= roundUp(iso.length())) {
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
                 val sb = SubBlob(iso, lba * SS, size)
                 lastArk = sb
                 out.add(sb)
             } else {
                 if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
+<<<<<<< HEAD
+=======
+                val tl = planTail(lba, size, progress)
+                if (tl != null) {
+                    tail = tl
+                    // HDR yang berada di setelah ARK ikut dipindah/ditulis ulang oleh commit
+                    val hdrLba = recInfo(hdrName).first
+                    if (hdrLba * SS >= end) hdrOverwritten = true
+                    val sb = SubBlob(iso, lba * SS, size)
+                    lastArk = sb
+                    out.add(sb)
+                    continue
+                }
+>>>>>>> b2ef2b1 (v0.6.3)
                 // pindahkan ke akhir image
                 progress("ARK bukan berkas terakhir di ISO; menyalin ke akhir image (butuh ruang kosong sebesar ARK)…")
                 val newStart = roundUp(iso.length())
@@ -200,6 +313,7 @@ class IsoGen private constructor(
         val (lba, _) = recInfo(name)
         setRec(name, lba, lastArkSize)
 <<<<<<< HEAD
+<<<<<<< HEAD
         var end = roundUp(maxOf(iso.length(), lba * SS + lastArkSize))
         val (hl, hs) = recInfo(hdrName)
         if (roundUp(hdr.size.toLong()) <= roundUp(hs)) {
@@ -212,6 +326,11 @@ class IsoGen private constructor(
 =======
         val arkEnd = roundUp(lba * SS + lastArkSize)
         var end = roundUp(maxOf(iso.length(), arkEnd))
+=======
+        val arkEnd = roundUp(lba * SS + lastArkSize)
+        var end = roundUp(maxOf(iso.length(), arkEnd))
+        var cursor = arkEnd
+>>>>>>> b2ef2b1 (v0.6.3)
         val (hl, hs) = recInfo(hdrName)
         if (!hdrOverwritten && roundUp(hdr.size.toLong()) <= roundUp(hs)) {
             iso.write(hl * SS, hdr)
@@ -220,9 +339,34 @@ class IsoGen private constructor(
             val pos = if (hdrOverwritten) arkEnd else end
             iso.write(pos, hdr)
             setRec(hdrName, pos / SS, hdr.size.toLong())
+<<<<<<< HEAD
             end = maxOf(end, pos + roundUp(hdr.size.toLong()))
 >>>>>>> 58c523f (v0.6.3)
         }
+=======
+            cursor = pos + roundUp(hdr.size.toLong())
+            end = maxOf(end, cursor)
+        }
+        // berkas yang tadinya di setelah ARK ditulis ulang tepat setelah ARK/HDR baru
+        for (tf in tail) {
+            val at = cursor
+            java.io.FileInputStream(tf.tmp).use { fi ->
+                val buf = ByteArray(4 shl 20)
+                var done = 0L
+                while (done < tf.size) {
+                    val n = fi.read(buf, 0, minOf(buf.size.toLong(), tf.size - done).toInt())
+                    if (n <= 0) break
+                    iso.write(at + done, if (n == buf.size) buf else buf.copyOf(n))
+                    done += n
+                }
+            }
+            for (rp in tf.recs) setRecAt(rp, at / SS)
+            cursor = at + roundUp(tf.size)
+            tf.tmp.delete()
+        }
+        tail = emptyList()
+        end = maxOf(end, cursor)
+>>>>>>> b2ef2b1 (v0.6.3)
         // pad akhir ke kelipatan sektor dan perbarui ukuran volume
         if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
         setVolumeSectors(end / SS)

@@ -54,6 +54,7 @@ object PcmDecoder {
             var srcIndex = 0L
             var nextOutSrc = 0.0
 <<<<<<< HEAD
+<<<<<<< HEAD
             BufferedOutputStream(FileOutputStream(outFile), 1 shl 16).use { os ->
                 fun emit(l: Float, r: Float) {
                     val a = (l.coerceIn(-1f, 1f) * 32767f).toInt()
@@ -61,6 +62,8 @@ object PcmDecoder {
                     os.write(a and 0xFF); os.write((a shr 8) and 0xFF)
                     os.write(b and 0xFF); os.write((b shr 8) and 0xFF)
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             FileOutputStream(outFile).use { os ->
                 val ob = ByteArray(1 shl 16)
                 var op = 0
@@ -70,7 +73,10 @@ object PcmDecoder {
                     ob[op++] = a.toByte(); ob[op++] = (a shr 8).toByte()
                     ob[op++] = b.toByte(); ob[op++] = (b shr 8).toByte()
                     if (op == ob.size) { os.write(ob, 0, op); op = 0 }
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
                     frames++
                 }
                 fun push(l: Float, r: Float) {
@@ -90,10 +96,14 @@ object PcmDecoder {
                     if (cancelled()) throw InterruptedException("dibatalkan")
                     if (!inDone) {
 <<<<<<< HEAD
+<<<<<<< HEAD
                         val ii = codec.dequeueInputBuffer(5000)
 =======
                         val ii = codec.dequeueInputBuffer(2000)
 >>>>>>> 58c523f (v0.6.3)
+=======
+                        val ii = codec.dequeueInputBuffer(2000)
+>>>>>>> b2ef2b1 (v0.6.3)
                         if (ii >= 0) {
                             val buf = codec.getInputBuffer(ii)!!
                             val n = ex.readSampleData(buf, 0)
@@ -107,10 +117,14 @@ object PcmDecoder {
                         }
                     }
 <<<<<<< HEAD
+<<<<<<< HEAD
                     val oi = codec.dequeueOutputBuffer(info, 5000)
 =======
                     val oi = codec.dequeueOutputBuffer(info, 2000)
 >>>>>>> 58c523f (v0.6.3)
+=======
+                    val oi = codec.dequeueOutputBuffer(info, 2000)
+>>>>>>> b2ef2b1 (v0.6.3)
                     if (oi >= 0) {
                         val ob = codec.getOutputBuffer(oi)!!
                         ob.position(info.offset)
@@ -145,9 +159,13 @@ object PcmDecoder {
                     }
                 }
 <<<<<<< HEAD
+<<<<<<< HEAD
 =======
                 if (op > 0) os.write(ob, 0, op)
 >>>>>>> 58c523f (v0.6.3)
+=======
+                if (op > 0) os.write(ob, 0, op)
+>>>>>>> b2ef2b1 (v0.6.3)
             }
             return frames
         } finally {
@@ -160,6 +178,7 @@ object PcmDecoder {
     /** Campur beberapa berkas PCM (stereo 44100) menjadi satu berkas; panjang = yang terpanjang. */
     fun mix(files: List<File>, out: File): Long {
         if (files.size == 1) { files[0].copyTo(out, true); return out.length() / 4 }
+<<<<<<< HEAD
 <<<<<<< HEAD
         val ins = files.map { BufferedInputStream(FileInputStream(it), 1 shl 16) }
         val lens = files.map { it.length() / 4 }
@@ -180,6 +199,8 @@ object PcmDecoder {
                 os.write(l and 0xFF); os.write((l shr 8) and 0xFF)
                 os.write(r and 0xFF); os.write((r shr 8) and 0xFF)
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
         val ins = files.map { java.io.RandomAccessFile(it, "r") }
         val lens = files.map { it.length() / 4 }
         val total = lens.max()
@@ -207,7 +228,10 @@ object PcmDecoder {
                 }
                 os.write(ob, 0, n * 4)
                 done += n
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             }
         }
         ins.forEach { it.close() }
@@ -285,19 +309,26 @@ object Gh2Installer {
         ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw IllegalStateException("Tidak bisa membaca berkas")
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     /** Proses satu lagu: tulis .mid/.vgs ke ARK, kembalikan item DTB. */
     private fun processJob(ctx: Context, ark: Ark, job: Gh2Job, log: (String) -> Unit, cancelled: () -> Boolean): Pair<Gh2.Item, List<String>> {
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
     class Prepared(val item: Gh2.Item, val files: Map<String, ByteArray>, val warnings: List<String>)
 
     /** Proses satu lagu (CPU/IO berat, aman dijalankan paralel): hasilkan data tanpa menyentuh ARK. */
     private fun prepareJob(ctx: Context, idx: Int, job: Gh2Job, log: (String) -> Unit, cancelled: () -> Boolean): Prepared {
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
         val tmp = ArrayList<File>()
         try {
             var audioFrames = 0L
             var mixFile: File? = null
             if (job.audio.isNotEmpty()) {
+<<<<<<< HEAD
 <<<<<<< HEAD
                 for ((i, u) in job.audio.withIndex()) {
                     log("${job.label}: mendekode audio ${i + 1}/${job.audio.size}…")
@@ -308,6 +339,8 @@ object Gh2Installer {
                 mixFile = File(ctx.cacheDir, "gh2_mix.pcm")
                 audioFrames = PcmDecoder.mix(tmp, mixFile)
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
                 log("${job.label}: mendekode ${job.audio.size} audio…")
                 val files = job.audio.indices.map { File(ctx.cacheDir, "gh2_dec_${idx}_$it.pcm") }
                 tmp.addAll(files)
@@ -324,19 +357,26 @@ object Gh2Installer {
                 if (errs.isNotEmpty()) throw errs[0]
                 mixFile = File(ctx.cacheDir, "gh2_mix_$idx.pcm")
                 audioFrames = PcmDecoder.mix(files, mixFile)
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
                 tmp.add(mixFile)
             }
             val meta = job.meta
             val audioSec = audioFrames.toDouble() / PcmDecoder.RATE
 <<<<<<< HEAD
+<<<<<<< HEAD
             log("${job.label}: menyusun MIDI…")
 =======
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             val mr = Gh2.buildMidi(job.song, job.lead, job.coop, meta.coop == "bass", audioSec, job.song.offset.toDouble())
             val totalSec = mr.endSeconds + 5.0
             val shiftFrames = Math.round((mr.padSeconds - job.song.offset) * PcmDecoder.RATE)
             log("${job.label}: mengenkode audio PS2…")
+<<<<<<< HEAD
 <<<<<<< HEAD
             val vgs = ByteArrayOutputStream()
             var ins: BufferedInputStream? = null
@@ -344,12 +384,17 @@ object Gh2Installer {
                 val bandSrc: Vag.Src = if (mixFile != null) {
                     ins = BufferedInputStream(FileInputStream(mixFile), 1 shl 16)
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             val vgs = ByteArrayOutputStream(1 shl 22)
             var ins: BufferedInputStream? = null
             try {
                 val bandSrc: Vag.Src = if (mixFile != null) {
                     ins = BufferedInputStream(FileInputStream(mixFile), 1 shl 18)
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
                     val s = Vag.StreamSrc(2, PcmDecoder.RATE, ins, if (shiftFrames < 0) -shiftFrames else 0L)
                     if (shiftFrames > 0) ShiftSrc(s, shiftFrames) else s
                 } else Vag.ZeroSrc(2, PcmDecoder.RATE)
@@ -362,18 +407,24 @@ object Gh2Installer {
             val previewStart = (totalSec * 0.3 * 1000).toInt()
             val entry = Gh2.songEntry(meta, previewStart, previewStart + 30000, (mr.endSeconds * 1000).toInt())
 <<<<<<< HEAD
+<<<<<<< HEAD
             ark.put("songs/${meta.symbol}/${meta.symbol}.mid", mr.bytes)
             ark.put("songs/${meta.symbol}/${meta.symbol}.vgs", vgs.toByteArray())
             ark.put("songs/${meta.symbol}/${meta.symbol}_empty.vgs", empty.toByteArray())
             return Gh2.Item(meta, entry, mr.scores) to mr.warnings.map { "${job.label}: $it" }
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             val files = linkedMapOf(
                 "${meta.symbol}.mid" to mr.bytes,
                 "${meta.symbol}.vgs" to vgs.toByteArray(),
                 "${meta.symbol}_empty.vgs" to empty.toByteArray()
             )
             return Prepared(Gh2.Item(meta, entry, mr.scores), files, mr.warnings.map { "${job.label}: $it" })
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
         } finally {
             tmp.forEach { it.delete() }
         }
@@ -449,6 +500,7 @@ object Gh2Installer {
             val warns = ArrayList<String>()
             val failed = ArrayList<String>()
 <<<<<<< HEAD
+<<<<<<< HEAD
             for ((i, job) in jobs.withIndex()) {
                 if (cancelled()) { failed.add("(dibatalkan sebelum ${job.label})"); break }
                 log("[${i + 1}/${jobs.size}] ${job.label}")
@@ -463,6 +515,8 @@ object Gh2Installer {
                     failed.add("${job.label}: ${e.message ?: e.javaClass.simpleName}")
                 }
 =======
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             val pool = minOf(3, maxOf(1, Runtime.getRuntime().availableProcessors() - 1))
             val exec = java.util.concurrent.Executors.newFixedThreadPool(pool)
             val queue = java.util.concurrent.LinkedBlockingQueue<Pair<Int, java.util.concurrent.Future<Prepared>?>>()
@@ -503,7 +557,10 @@ object Gh2Installer {
             } finally {
                 producer.interrupt()
                 exec.shutdownNow()
+<<<<<<< HEAD
 >>>>>>> 58c523f (v0.6.3)
+=======
+>>>>>>> b2ef2b1 (v0.6.3)
             }
             if (items.isEmpty()) throw IllegalStateException("Tidak ada lagu yang berhasil diproses.\n" + failed.joinToString("\n"))
             log("Memperbarui daftar lagu (DTB)…")
