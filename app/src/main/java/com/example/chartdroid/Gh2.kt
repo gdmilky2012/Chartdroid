@@ -49,6 +49,14 @@ object Dtb {
     /** (key a b c) */
     fun kv(key: String, vararg a: C): C = T(0x10, (listOf(sym(key)) + a.toList()).toMutableList())
 
+    fun copy(c: C): C = when (c) {
+        is I -> I(c.v)
+        is F -> F(c.v)
+        is S -> S(c.type, c.bytes.copyOf())
+        is N -> N(c.type)
+        is T -> T(c.type, c.kids.map { copy(it) }.toMutableList())
+    }
+
     /** Teks mirip DTA untuk pemeriksaan manual. */
     fun text(c: C, sb: StringBuilder = StringBuilder(), depth: Int = 0): StringBuilder {
         when (c) {
@@ -866,7 +874,17 @@ object Gh2 {
             for (it in items) {
                 if (root.any { c -> Dtb.isEntry(c, it.meta.symbol) }) warn.add("Simbol '${it.meta.symbol}' sudah ada di songs.dtb dan ditimpa")
                 Dtb.removeEntry(root, it.meta.symbol)
-                root.add(0, Dtb.T(0x10, (listOf(Dtb.sym(it.meta.symbol)) + it.entry).toMutableList()))
+                val kids = it.entry.toMutableList()
+                // lengkapi kunci yang ada di entri DX asli ISO ini tetapi tidak ada di entri kita (mis. band)
+                val tpl = root.firstOrNull { c -> c is Dtb.T && c.type == 0x10 && c.kids.any { k -> k is Dtb.T && k.kids.isNotEmpty() && Dtb.symName(k.kids[0]) == "song_vs" } } as? Dtb.T
+                if (tpl != null && it.meta.deluxe) {
+                    val have = kids.mapNotNull { k -> if (k is Dtb.T && k.kids.isNotEmpty()) Dtb.symName(k.kids[0]) else null }.toSet()
+                    for (k in tpl.kids.drop(1)) {
+                        val key = if (k is Dtb.T && k.kids.isNotEmpty()) Dtb.symName(k.kids[0]) else null
+                        if (key != null && key !in have && !key.startsWith("song_practice")) kids.add(Dtb.copy(k))
+                    }
+                }
+                root.add(0, Dtb.T(0x10, (listOf(Dtb.sym(it.meta.symbol)) + kids).toMutableList()))
             }
         }
         edit("config/gen/coop_max_scores.dtb", false) { root ->
