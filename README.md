@@ -38,3 +38,4 @@ File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum dia
 - v0.6.6: Periksa ISO menampilkan entri lagu pertama (teks) + penanda DX, dan menulis songs.dtb.txt untuk analisis.
 - v0.6.7: UJI C (berkas dummy) dan UJI D (entri DTB dummy) untuk mengisolasi layar hitam.
 - v0.6.8: entri lagu DX dilengkapi kunci dari entri DX asli ISO (mis. band).
+- v0.6.9: pans/vols/cores kini berbentuk daftar berkurung seperti entri asli ISO ((pans (-1.0 1.0)) dst).

@@ -781,9 +781,9 @@ object Gh2 {
         val kids = ArrayList<Dtb.C>()
         kids.add(Dtb.kv("name", Dtb.str(name)))
         kids.add(Dtb.kv("tracks", Dtb.pl(channels.map { (k, v) -> Dtb.kv(k, nums(v)) })))
-        kids.add(Dtb.kv("pans", *pans.map { Dtb.f(it.toFloat()) }.toTypedArray()))
-        kids.add(Dtb.kv("vols", *vols.map { Dtb.f(it.toFloat()) }.toTypedArray()))
-        kids.add(Dtb.kv("cores", *cores.map { Dtb.i(it) }.toTypedArray()))
+        kids.add(Dtb.kv("pans", Dtb.pl(pans.map { Dtb.f(it.toFloat()) })))
+        kids.add(Dtb.kv("vols", Dtb.pl(vols.map { Dtb.f(it.toFloat()) })))
+        kids.add(Dtb.kv("cores", Dtb.pl(cores.map { Dtb.i(it) })))
         kids.add(Dtb.kv("midi_file", Dtb.str("songs/$sym/$sym.mid")))
         if (hopo != null) kids.add(Dtb.kv("hopo_threshold", Dtb.i(hopo)))
         return Dtb.T(0x10, (listOf(Dtb.sym("song")) + kids).toMutableList()).also { }
