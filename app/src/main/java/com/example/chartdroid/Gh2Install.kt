@@ -455,7 +455,7 @@ object Gh2Installer {
      * Uji isolasi layar hitam: lakukan HANYA operasi wadah (ARK/HDR dipindah & ditulis ulang) tanpa menambah lagu.
      * withDtb: tulis juga 4 DTB penting apa adanya (isi tidak berubah). Jurnal disimpan sehingga bisa dipulihkan.
      */
-    fun containerTest(ctx: Context, iso: Uri, withDtb: Boolean): String {
+    fun containerTest(ctx: Context, iso: Uri, withDtb: Boolean, extra: Int = 0): String {
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
         val jf = File(dir, "gh2_iso_journal_${System.currentTimeMillis()}.bin")
         val jos = java.io.DataOutputStream(FileOutputStream(jf))
@@ -471,10 +471,15 @@ object Gh2Installer {
                         ark.put(p, Dtb.writeAny(Dtb.parseAny(ark.read(e))))
                     }
                 }
+                if (extra == 1) ark.put("songs/zzdummy/zzdummy.mid", ByteArray(2048))
+                if (extra == 2) {
+                    val dm = Gh2.Meta(symbol = "zzdummy", title = "Dummy", artist = "Dummy")
+                    Gh2.installDtbs(ark, listOf(Gh2.Item(dm, Gh2.songEntry(dm, 1000, 2000, 180000), intArrayOf(1, 2, 3, 4))))
+                }
                 g.commit(ark.hdrBytes(), ark.partSizes.last())
                 raw.flush()
                 jos.close()
-                return "Selesai (" + (if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
+                return "Selesai (" + (if (extra == 1) "wadah + 1 berkas dummy" else if (extra == 2) "wadah + 1 entri DTB dummy" else if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
             } catch (t: Throwable) {
                 try { jos.close() } catch (e: Exception) {}
                 try { jf.inputStream().use { JournalBlob.restore(raw, it) } } catch (e: Exception) {}
