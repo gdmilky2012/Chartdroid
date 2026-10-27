@@ -49,8 +49,6 @@ object Dtb {
     /** (key a b c) */
     fun kv(key: String, vararg a: C): C = T(0x10, (listOf(sym(key)) + a.toList()).toMutableList())
 
-<<<<<<< HEAD
-=======
     /** Teks mirip DTA untuk pemeriksaan manual. */
     fun text(c: C, sb: StringBuilder = StringBuilder(), depth: Int = 0): StringBuilder {
         when (c) {
@@ -73,7 +71,6 @@ object Dtb {
         return sb
     }
 
->>>>>>> d6b865e (v0.6.6)
     fun symName(c: C): String? = if (c is S && c.type == 5) String(c.bytes, Charsets.ISO_8859_1) else null
 
     /** Elemen Parens yang anak pertamanya Sym == key. */
