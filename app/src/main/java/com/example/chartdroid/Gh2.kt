@@ -49,6 +49,31 @@ object Dtb {
     /** (key a b c) */
     fun kv(key: String, vararg a: C): C = T(0x10, (listOf(sym(key)) + a.toList()).toMutableList())
 
+<<<<<<< HEAD
+=======
+    /** Teks mirip DTA untuk pemeriksaan manual. */
+    fun text(c: C, sb: StringBuilder = StringBuilder(), depth: Int = 0): StringBuilder {
+        when (c) {
+            is I -> sb.append(c.v)
+            is F -> sb.append(c.v)
+            is S -> when (c.type) {
+                5 -> sb.append(String(c.bytes, Charsets.ISO_8859_1))
+                2 -> sb.append('$').append(String(c.bytes, Charsets.ISO_8859_1))
+                0x12 -> sb.append('"').append(String(c.bytes, Charsets.ISO_8859_1)).append('"')
+                else -> sb.append("<s").append(c.type).append(':').append(String(c.bytes, Charsets.ISO_8859_1)).append('>')
+            }
+            is N -> sb.append("<n").append(c.type).append('>')
+            is T -> {
+                val (o, cl) = when (c.type) { 0x10 -> "(" to ")"; 0x11 -> "{" to "}"; 0x13 -> "[" to "]"; else -> "<t${c.type}" to ">" }
+                sb.append(o)
+                for ((i, k) in c.kids.withIndex()) { if (i > 0) sb.append(' '); text(k, sb, depth + 1) }
+                sb.append(cl)
+            }
+        }
+        return sb
+    }
+
+>>>>>>> d6b865e (v0.6.6)
     fun symName(c: C): String? = if (c is S && c.type == 5) String(c.bytes, Charsets.ISO_8859_1) else null
 
     /** Elemen Parens yang anak pertamanya Sym == key. */

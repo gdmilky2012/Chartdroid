@@ -522,6 +522,18 @@ object Gh2Installer {
                 val back = Dtb.writeAny(doc)
                 val same = back.contentEquals(raw)
                 sb.append("- $p: ${raw.size} B, enkripsi=${doc.crypt}, anak=${doc.root.size}, tulis-ulang ${if (same) "IDENTIK" else "BERBEDA (${back.size} B)"}\n")
+<<<<<<< HEAD
+=======
+                val txt = StringBuilder()
+                for (c in doc.root) { Dtb.text(c, txt); txt.append('\n') }
+                File(dir, p.replace('/', '_') + ".txt").writeText(txt.toString())
+                if (p.endsWith("songs.dtb")) {
+                    val all = txt.toString()
+                    sb.append("  penanda DX: song_vs=${all.contains("song_vs")}, fake=${all.contains("fake")}, songalbum=${all.contains("songalbum")}\n")
+                    val first = doc.root.firstOrNull { it is Dtb.T }
+                    if (first != null) sb.append("  entri pertama: ").append(Dtb.text(first).take(1500)).append('\n')
+                }
+>>>>>>> d6b865e (v0.6.6)
             } catch (t: Throwable) { sb.append("- $p: gagal dibaca: ${t.message}\n") }
         }
         sb.append("Salinan DTB asli disimpan di: ${dir.absolutePath}")
