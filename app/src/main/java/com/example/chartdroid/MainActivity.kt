@@ -2385,7 +2385,7 @@ TIPS
     private var gh2CheckMode = 0
 
     private fun gh2CheckDialog() {
-        val items = arrayOf("Periksa ISO (hanya baca)", "Periksa + perbaiki ukuran volume", "Pulihkan ISO ke kondisi sebelum dipasangi (jurnal terakhir)", "UJI A: hanya tulis ulang wadah ISO, tanpa lagu (mengubah ISO!)", "UJI B: wadah + 4 DTB apa adanya, tanpa lagu (mengubah ISO!)", "UJI C: wadah + 1 berkas dummy (tanpa DTB) (mengubah ISO!)", "UJI D: wadah + 1 entri lagu dummy di DTB (tanpa berkas) (mengubah ISO!)")
+        val items = arrayOf("Periksa ISO (hanya baca)", "Periksa + perbaiki ukuran volume", "Pulihkan ISO ke kondisi sebelum dipasangi (jurnal terakhir)", "UJI A: hanya tulis ulang wadah ISO, tanpa lagu (mengubah ISO!)", "UJI B: wadah + 4 DTB apa adanya, tanpa lagu (mengubah ISO!)", "UJI C: wadah + 1 berkas dummy (tanpa DTB) (mengubah ISO!)", "UJI D: wadah + 1 entri lagu dummy di DTB (tanpa berkas) (mengubah ISO!)", "UJI F: klon entri lagu pertama dengan nama baru, tanpa berkas (mengubah ISO!)")
         AlertDialog.Builder(this)
             .setTitle("ISO GH2")
             .setItems(items) { _, which ->
@@ -2412,6 +2412,7 @@ TIPS
                     4 -> Gh2Installer.containerTest(this, iso, true)
                     5 -> Gh2Installer.containerTest(this, iso, false, 1)
                     6 -> Gh2Installer.containerTest(this, iso, false, 2)
+                    7 -> Gh2Installer.containerTest(this, iso, false, 3)
                     else -> {
                         val j = Gh2Installer.journals(this)
                         if (j.isEmpty()) "Tidak ada jurnal pemulihan di perangkat ini."

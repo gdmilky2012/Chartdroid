@@ -472,6 +472,16 @@ object Gh2Installer {
                     }
                 }
                 if (extra == 1) ark.put("songs/zzdummy/zzdummy.mid", ByteArray(2048))
+                if (extra == 3) {
+                    // klon entri pertama songs.dtb dengan simbol baru (tanpa berkas baru)
+                    val p = "config/gen/songs.dtb"
+                    val doc = Dtb.parseAny(ark.read(ark.find(p)!!))
+                    val src = doc.root.firstOrNull { it is Dtb.T } as Dtb.T
+                    val cp = Dtb.copy(src) as Dtb.T
+                    cp.kids[0] = Dtb.sym("zzclone")
+                    doc.root.add(0, cp)
+                    ark.put(p, Dtb.writeAny(doc))
+                }
                 if (extra == 2) {
                     val dm = Gh2.Meta(symbol = "zzdummy", title = "Dummy", artist = "Dummy")
                     Gh2.installDtbs(ark, listOf(Gh2.Item(dm, Gh2.songEntry(dm, 1000, 2000, 180000), intArrayOf(1, 2, 3, 4))))
@@ -479,7 +489,7 @@ object Gh2Installer {
                 g.commit(ark.hdrBytes(), ark.partSizes.last())
                 raw.flush()
                 jos.close()
-                return "Selesai (" + (if (extra == 1) "wadah + 1 berkas dummy" else if (extra == 2) "wadah + 1 entri DTB dummy" else if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
+                return "Selesai (" + (if (extra == 1) "wadah + 1 berkas dummy" else if (extra == 2) "wadah + 1 entri DTB dummy" else if (extra == 3) "wadah + klon entri pertama songs.dtb" else if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
             } catch (t: Throwable) {
                 try { jos.close() } catch (e: Exception) {}
                 try { jf.inputStream().use { JournalBlob.restore(raw, it) } } catch (e: Exception) {}
