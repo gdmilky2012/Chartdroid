@@ -884,13 +884,13 @@ object Gh2 {
                         if (key != null && key !in have && !key.startsWith("song_practice")) kids.add(Dtb.copy(k))
                     }
                 }
-                root.add(0, Dtb.T(0x10, (listOf(Dtb.sym(it.meta.symbol)) + kids).toMutableList()))
+                root.add(Dtb.T(0x10, (listOf(Dtb.sym(it.meta.symbol)) + kids).toMutableList()))
             }
         }
         edit("config/gen/coop_max_scores.dtb", false) { root ->
             for (it in items) {
                 Dtb.removeEntry(root, it.meta.symbol)
-                root.add(0, coopScoresEntry(it.meta.symbol, it.scores))
+                root.add(coopScoresEntry(it.meta.symbol, it.scores))
             }
         }
         edit("config/gen/store.dtb", false) { root ->
@@ -918,7 +918,7 @@ object Gh2 {
                 add.add(Dtb.p(Dtb.sym(m.symbol + "_shop_desc"), Dtb.str(latin(m.artist))))
                 if (m.deluxe && m.author.isNotBlank()) add.add(Dtb.p(Dtb.sym(m.symbol + "_author"), Dtb.str(latin(m.author))))
             }
-            root.addAll(0, add)
+            root.addAll(add)
         }
         return warn
     }
