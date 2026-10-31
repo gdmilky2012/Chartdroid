@@ -239,11 +239,17 @@ interface Blob {
 }
 
 class ArkEntry(var offset: Long, var name: String, var folder: String?, var size: Long, var inflate: Long) {
+    /** Indeks string asli di HDR (-1 = entri baru); folderIdx -2 = entri baru, -1 = tanpa folder. */
+    var nameIdx = -1
+    var folderIdx = -2
     val path: String get() = if (folder != null) "$folder/$name" else name
 }
 
 class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, val parts: List<Blob>) {
     var dirty = false
+    /** Bank string + tabel offset asli dari HDR; dipertahankan persis, hanya string baru yang ditambahkan di akhir. */
+    var rawBank: ByteArray? = null
+    var rawOffs: IntArray? = null
 
     fun find(path: String): ArkEntry? = entries.lastOrNull { it.path.equals(path, ignoreCase = true) }
 
@@ -298,17 +304,31 @@ class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, 
     }
 
     fun hdrBytes(): ByteArray {
-        val strings = LinkedHashMap<String, Int>()
-        for (e in entries) {
-            strings.getOrPut(e.name) { strings.size }
-            e.folder?.let { strings.getOrPut(it) { strings.size } }
-        }
         val bank = ByteArrayOutputStream()
         val offs = ArrayList<Int>()
-        for (s in strings.keys) {
+        val index = HashMap<String, Int>()
+        val rb = rawBank
+        val ro = rawOffs
+        if (rb != null && ro != null) {
+            bank.write(rb)
+            for ((i, o) in ro.withIndex()) {
+                offs.add(o)
+                var e = o
+                while (e < rb.size && rb[e].toInt() != 0) e++
+                index.putIfAbsent(String(rb, o, e - o, Charsets.ISO_8859_1), i)
+            }
+        }
+        fun idx(str: String): Int = index.getOrPut(str) {
             offs.add(bank.size())
-            bank.write(s.toByteArray(Charsets.ISO_8859_1))
+            bank.write(str.toByteArray(Charsets.ISO_8859_1))
             bank.write(0)
+            offs.size - 1
+        }
+        val nameIdx = IntArray(entries.size)
+        val folderIdx = IntArray(entries.size)
+        for ((i, e) in entries.withIndex()) {
+            nameIdx[i] = if (e.nameIdx >= 0) e.nameIdx else idx(e.name)
+            folderIdx[i] = if (e.folderIdx != -2) e.folderIdx else (e.folder?.let { idx(it) } ?: -1)
         }
         val bb = ByteBuffer.allocate(64 + partSizes.size * 4 + bank.size() + offs.size * 4 + entries.size * 20)
             .order(ByteOrder.LITTLE_ENDIAN)
@@ -321,10 +341,10 @@ class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, 
         bb.putInt(offs.size)
         for (o in offs) bb.putInt(o)
         bb.putInt(entries.size)
-        for (e in entries) {
+        for ((i, e) in entries.withIndex()) {
             bb.putInt(e.offset.toInt())
-            bb.putInt(strings[e.name]!!)
-            bb.putInt(e.folder?.let { strings[it]!! } ?: -1)
+            bb.putInt(nameIdx[i])
+            bb.putInt(folderIdx[i])
             bb.putInt(e.size.toInt())
             bb.putInt(e.inflate.toInt())
         }
@@ -361,10 +381,13 @@ class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, 
                 val folder = bb.int
                 val size = bb.int.toLong() and 0xFFFFFFFFL
                 val infl = bb.int.toLong() and 0xFFFFFFFFL
-                list.add(ArkEntry(off, str(name), if (folder == -1) null else str(folder), size, infl))
+                val en = ArkEntry(off, str(name), if (folder == -1) null else str(folder), size, infl)
+                en.nameIdx = name
+                en.folderIdx = folder
+                list.add(en)
             }
             require(parts.size == sizes.size) { "Jumlah file ARK (${parts.size}) tidak cocok dengan HDR (${sizes.size})" }
-            return Ark(sizes, list, parts)
+            return Ark(sizes, list, parts).also { it.rawBank = bank; it.rawOffs = offs }
         }
     }
 }

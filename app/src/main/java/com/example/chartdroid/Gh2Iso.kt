@@ -276,7 +276,7 @@ class IsoGen private constructor(
                 setRec(n, newStart / SS, size)
                 val relEnd = roundUp(newStart + size)
                 if (iso.length() < relEnd) iso.write(relEnd - 1, byteArrayOf(0))
-                setVolumeSectors(relEnd / SS)
+                growVolumeSectors(relEnd / SS)
                 val sb = SubBlob(iso, newStart, size)
                 lastArk = sb
                 out.add(sb)
@@ -326,9 +326,12 @@ class IsoGen private constructor(
         end = maxOf(end, cursor)
         // pad akhir ke kelipatan sektor dan perbarui ukuran volume
         if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
-        setVolumeSectors(end / SS)
+        growVolumeSectors(end / SS)
         ark.len = lastArkSize
     }
+
+    /** Besarkan ukuran volume bila perlu; tidak pernah mengecilkan (ISO asli bisa mencatat volume lebih besar dari file). */
+    fun growVolumeSectors(sectors: Long) { setVolumeSectors(maxOf(sectors, volumeSectors())) }
 
     /** Tulis ukuran volume (dalam sektor) ke semua descriptor PVD/SVD. */
     fun setVolumeSectors(sectors: Long) {
@@ -359,7 +362,7 @@ class IsoGen private constructor(
         val len = iso.length()
         val need = roundUp(len) / SS
         val vol = volumeSectors()
-        if (vol != need) problems.add("Ukuran volume di PVD = $vol sektor, ukuran file = $need sektor")
+        if (vol < need) problems.add("Ukuran volume di PVD = $vol sektor, lebih kecil dari ukuran file = $need sektor")
         val names = listOf(hdrName) + arkNames
         for (n in names) {
             val (lba, size) = recInfo(n)
