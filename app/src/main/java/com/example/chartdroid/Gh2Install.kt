@@ -534,9 +534,18 @@ object Gh2Installer {
 
     /** Uji keandalan penulis DTB pada data asli: baca lalu tulis ulang tanpa perubahan, bandingkan byte. Juga simpan salinan DTB. */
     private fun dtbReport(ctx: Context, g: IsoGen): String {
-        val ark = Ark.open(g.readHdr(), g.arkParts({ }, false))
+        val hdr0 = g.readHdr()
+        val ark = Ark.open(hdr0, g.arkParts({ }, false))
         val dir = File(ctx.getExternalFilesDir(null), "gh2_dtb").also { it.mkdirs() }
-        val sb = StringBuilder("Uji DTB (baca → tulis ulang tanpa perubahan):\n")
+        File(dir, "MAIN.HDR.asli").writeBytes(hdr0)
+        val sb = StringBuilder()
+        val regen = ark.hdrBytes()
+        var firstDiff = -1
+        for (i in 0 until minOf(hdr0.size, regen.size)) if (hdr0[i] != regen[i]) { firstDiff = i; break }
+        if (firstDiff < 0 && hdr0.size != regen.size) firstDiff = minOf(hdr0.size, regen.size)
+        sb.append("HDR: asli ${hdr0.size} B, hasil regenerasi ${regen.size} B, ")
+        sb.append(if (firstDiff < 0) "IDENTIK\n\n" else "BERBEDA mulai byte $firstDiff\n\n")
+        sb.append("Uji DTB (baca → tulis ulang tanpa perubahan):\n")
         for (p in listOf("config/gen/songs.dtb", "config/gen/coop_max_scores.dtb", "config/gen/store.dtb", "ui/eng/gen/locale.dtb")) {
             val e = ark.find(p)
             if (e == null) { sb.append("- $p: TIDAK ADA\n"); continue }
