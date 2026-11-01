@@ -230,7 +230,7 @@ class IsoGen private constructor(
     private var hdrOverwritten = false
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
-    fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true): List<Blob> {
+    fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true, forceRelocate: Boolean = false): List<Blob> {
         val out = ArrayList<Blob>()
         for ((i, n) in arkNames.withIndex()) {
             val (lba, size) = recInfo(n)
@@ -251,7 +251,7 @@ class IsoGen private constructor(
                 out.add(sb)
             } else {
                 if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
-                val tl = planTail(lba, size, progress)
+                val tl = if (forceRelocate) null else planTail(lba, size, progress)
                 if (tl != null) {
                     tail = tl
                     // HDR yang berada di setelah ARK ikut dipindah/ditulis ulang oleh commit

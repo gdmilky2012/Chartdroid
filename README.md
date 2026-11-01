@@ -44,3 +44,4 @@ File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum dia
 - v0.7.2: lagu baru ditaruh di AKHIR songs.dtb (di awal membuat layar hitam pada ISO uji; terbukti lewat UJI F/G/H). coop_max_scores dan locale juga di akhir.
 - v0.7.3: laporan Periksa ISO membandingkan HDR asli vs regenerasi dan menyimpan MAIN.HDR.asli.
 - v0.7.4: HDR tidak lagi dibangun ulang: bank string + tabel offset asli dipertahankan persis, entri lama tetap di tempatnya, hanya string/entri baru ditambahkan di akhir. Ukuran volume ISO tidak pernah dikecilkan.
+- v0.7.5: UJI K (berkas dummy kecil tanpa menambah sektor) dan UJI L (ARK disalin ke akhir image) untuk mengisolasi layar hitam.

@@ -456,6 +456,7 @@ object Gh2Installer {
      * withDtb: tulis juga 4 DTB penting apa adanya (isi tidak berubah). Jurnal disimpan sehingga bisa dipulihkan.
      */
     fun containerTest(ctx: Context, iso: Uri, withDtb: Boolean, extra: Int = 0): String {
+        val force = extra == 7
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
         val jf = File(dir, "gh2_iso_journal_${System.currentTimeMillis()}.bin")
         val jos = java.io.DataOutputStream(FileOutputStream(jf))
@@ -463,7 +464,7 @@ object Gh2Installer {
         SafBlob(ctx, iso).use { raw ->
             try {
                 val g = IsoGen.open(JournalBlob(raw, jos))
-                val parts = g.arkParts({ log.append(it).append('\n') })
+                val parts = g.arkParts({ log.append(it).append('\n') }, true, force)
                 val ark = Ark.open(g.readHdr(), parts)
                 if (withDtb) {
                     for (p in listOf("config/gen/songs.dtb", "config/gen/coop_max_scores.dtb", "config/gen/store.dtb", "ui/eng/gen/locale.dtb")) {
@@ -471,7 +472,8 @@ object Gh2Installer {
                         ark.put(p, Dtb.writeAny(Dtb.parseAny(ark.read(e))))
                     }
                 }
-                if (extra == 1) ark.put("songs/zzdummy/zzdummy.mid", ByteArray(2048))
+                if (extra == 1 || extra == 7) ark.put("songs/zzdummy/zzdummy.mid", ByteArray(2048))
+                if (extra == 6) ark.put("songs/zzdummy/zzdummy.mid", ByteArray(900))
                 if (extra == 3) {
                     // klon entri pertama songs.dtb dengan simbol baru (tanpa berkas baru)
                     val p = "config/gen/songs.dtb"
@@ -499,7 +501,7 @@ object Gh2Installer {
                 g.commit(ark.hdrBytes(), ark.partSizes.last())
                 raw.flush()
                 jos.close()
-                return "Selesai (" + (if (extra == 1) "wadah + 1 berkas dummy" else if (extra == 2) "wadah + 1 entri DTB dummy" else if (extra == 3) "wadah + klon entri pertama songs.dtb" else if (extra == 4) "klon entri, DTB tanpa enkripsi" else if (extra == 5) "klon entri di akhir daftar" else if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
+                return "Selesai (" + (if (extra == 1) "wadah + 1 berkas dummy" else if (extra == 6) "wadah + berkas dummy 900 B (tanpa menambah sektor)" else if (extra == 7) "ARK disalin ke akhir image + berkas dummy" else if (extra == 2) "wadah + 1 entri DTB dummy" else if (extra == 3) "wadah + klon entri pertama songs.dtb" else if (extra == 4) "klon entri, DTB tanpa enkripsi" else if (extra == 5) "klon entri di akhir daftar" else if (withDtb) "wadah + DTB apa adanya" else "wadah saja") + "). Tidak ada lagu ditambahkan.\n" + log + "\n" + g.describe()
             } catch (t: Throwable) {
                 try { jos.close() } catch (e: Exception) {}
                 try { jf.inputStream().use { JournalBlob.restore(raw, it) } } catch (e: Exception) {}
