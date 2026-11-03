@@ -22,6 +22,8 @@ class IsoGen private constructor(
 ) {
     companion object {
         const val SS = 2048
+        /** Memindahkan berkas di belakang ARK (alih-alih menyalin ARK) terbukti membuat GH2 layar hitam (UJI K); dimatikan. */
+        const val ENABLE_TAIL = false
 
         private class Rec(val recPos: Long, val lba: Long, val size: Long, val isDir: Boolean, val name: String)
 
@@ -251,7 +253,7 @@ class IsoGen private constructor(
                 out.add(sb)
             } else {
                 if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
-                val tl = if (forceRelocate) null else planTail(lba, size, progress)
+                val tl = if (forceRelocate || !ENABLE_TAIL) null else planTail(lba, size, progress)
                 if (tl != null) {
                     tail = tl
                     // HDR yang berada di setelah ARK ikut dipindah/ditulis ulang oleh commit

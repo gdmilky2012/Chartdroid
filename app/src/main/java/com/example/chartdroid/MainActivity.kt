@@ -2385,7 +2385,7 @@ TIPS
     private var gh2CheckMode = 0
 
     private fun gh2CheckDialog() {
-        val items = arrayOf("Periksa ISO (hanya baca)", "Periksa + perbaiki ukuran volume", "Pulihkan ISO ke kondisi sebelum dipasangi (jurnal terakhir)", "UJI A: hanya tulis ulang wadah ISO, tanpa lagu (mengubah ISO!)", "UJI B: wadah + 4 DTB apa adanya, tanpa lagu (mengubah ISO!)", "UJI C: wadah + 1 berkas dummy (tanpa DTB) (mengubah ISO!)", "UJI D: wadah + 1 entri lagu dummy di DTB (tanpa berkas) (mengubah ISO!)", "UJI F: klon entri lagu pertama dengan nama baru, tanpa berkas (mengubah ISO!)", "UJI G: seperti F, tetapi songs.dtb ditulis TANPA enkripsi (mengubah ISO!)", "UJI H: seperti F, tetapi entri klon ditaruh di AKHIR daftar (mengubah ISO!)", "UJI K: 1 berkas dummy KECIL 900 B, ARK tidak menambah sektor (mengubah ISO!)", "UJI L: ARK disalin ke akhir image + 1 berkas dummy (ISO jadi besar) (mengubah ISO!)")
+        val items = arrayOf("Periksa ISO (hanya baca)", "Periksa + perbaiki ukuran volume", "Pulihkan ISO ke kondisi sebelum dipasangi (jurnal terakhir)", "UJI A: hanya tulis ulang wadah ISO, tanpa lagu (mengubah ISO!)", "UJI B: wadah + 4 DTB apa adanya, tanpa lagu (mengubah ISO!)", "UJI C: wadah + 1 berkas dummy (tanpa DTB) (mengubah ISO!)", "UJI D: wadah + 1 entri lagu dummy di DTB (tanpa berkas) (mengubah ISO!)", "UJI F: klon entri lagu pertama dengan nama baru, tanpa berkas (mengubah ISO!)", "UJI G: seperti F, tetapi songs.dtb ditulis TANPA enkripsi (mengubah ISO!)", "UJI H: seperti F, tetapi entri klon ditaruh di AKHIR daftar (mengubah ISO!)", "UJI K: 1 berkas dummy KECIL 900 B, ARK tidak menambah sektor (mengubah ISO!)", "UJI L: ARK disalin ke akhir image + 1 berkas dummy (ISO jadi besar) (mengubah ISO!)", "UJI N: 1 berkas dummy 30 MB (ARK bertambah besar), tanpa DTB (mengubah ISO!)")
         AlertDialog.Builder(this)
             .setTitle("ISO GH2")
             .setItems(items) { _, which ->
@@ -2417,6 +2417,7 @@ TIPS
                     9 -> Gh2Installer.containerTest(this, iso, false, 5)
                     10 -> Gh2Installer.containerTest(this, iso, false, 6)
                     11 -> Gh2Installer.containerTest(this, iso, false, 7)
+                    12 -> Gh2Installer.containerTest(this, iso, false, 8)
                     else -> {
                         val j = Gh2Installer.journals(this)
                         if (j.isEmpty()) "Tidak ada jurnal pemulihan di perangkat ini."

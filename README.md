@@ -45,3 +45,5 @@ File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum dia
 - v0.7.3: laporan Periksa ISO membandingkan HDR asli vs regenerasi dan menyimpan MAIN.HDR.asli.
 - v0.7.4: HDR tidak lagi dibangun ulang: bank string + tabel offset asli dipertahankan persis, entri lama tetap di tempatnya, hanya string/entri baru ditambahkan di akhir. Ukuran volume ISO tidak pernah dikecilkan.
 - v0.7.5: UJI K (berkas dummy kecil tanpa menambah sektor) dan UJI L (ARK disalin ke akhir image) untuk mengisolasi layar hitam.
+- v0.7.6: pemasangan ke ISO kembali menyalin ARK ke akhir image (tail dimatikan; UJI K gagal, UJI L berhasil). ISO jadi lebih besar (~ASLI + ARK) tetapi pemasangan berikutnya tidak menyalin lagi.
+- v0.7.7: UJI N (berkas dummy 30 MB) untuk menguji pengaruh ukuran ARK.
