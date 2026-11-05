@@ -330,12 +330,14 @@ class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, 
             nameIdx[i] = if (e.nameIdx >= 0) e.nameIdx else idx(e.name)
             folderIdx[i] = if (e.folderIdx != -2) e.folderIdx else (e.folder?.let { idx(it) } ?: -1)
         }
-        val bb = ByteBuffer.allocate(64 + partSizes.size * 4 + bank.size() + offs.size * 4 + entries.size * 20)
+        // ARK tambahan yang tidak dipakai (ukuran 0) tidak ditulis ke HDR
+        val ps = if (partSizes.size > 1 && partSizes.last() == 0L) partSizes.dropLast(1) else partSizes
+        val bb = ByteBuffer.allocate(64 + ps.size * 4 + bank.size() + offs.size * 4 + entries.size * 20)
             .order(ByteOrder.LITTLE_ENDIAN)
         bb.putInt(3)
-        bb.putInt(partSizes.size)
-        bb.putInt(partSizes.size)
-        for (s in partSizes) bb.putInt(s.toInt())
+        bb.putInt(ps.size)
+        bb.putInt(ps.size)
+        for (s in ps) bb.putInt(s.toInt())
         bb.putInt(bank.size())
         bb.put(bank.toByteArray())
         bb.putInt(offs.size)
@@ -386,6 +388,7 @@ class Ark(val partSizes: MutableList<Long>, val entries: MutableList<ArkEntry>, 
                 en.folderIdx = folder
                 list.add(en)
             }
+            if (parts.size == sizes.size + 1) sizes.add(0L) // ARK tambahan baru (kosong)
             require(parts.size == sizes.size) { "Jumlah file ARK (${parts.size}) tidak cocok dengan HDR (${sizes.size})" }
             return Ark(sizes, list, parts).also { it.rawBank = bank; it.rawOffs = offs }
         }

@@ -47,3 +47,4 @@ File > "Periksa / pulihkan ISO GH2…". Kode native RB3 (src/main/cpp) belum dia
 - v0.7.5: UJI K (berkas dummy kecil tanpa menambah sektor) dan UJI L (ARK disalin ke akhir image) untuk mengisolasi layar hitam.
 - v0.7.6: pemasangan ke ISO kembali menyalin ARK ke akhir image (tail dimatikan; UJI K gagal, UJI L berhasil). ISO jadi lebih besar (~ASLI + ARK) tetapi pemasangan berikutnya tidak menyalin lagi.
 - v0.7.7: UJI N (berkas dummy 30 MB) untuk menguji pengaruh ukuran ARK.
+- v0.7.8: ISO 1306 MB tidak terbaca emulator, jadi ARK TIDAK lagi disalin (ISO jadi ~2x). Data lagu baru ditaruh di berkas ARK tambahan (MAIN_1.ARK) di akhir image, record direktori ISO9660/Joliet disisipkan, HDR memakai 2 ARK. ISO hanya bertambah sebesar lagu baru.

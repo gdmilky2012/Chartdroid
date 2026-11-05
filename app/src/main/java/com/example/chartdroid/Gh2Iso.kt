@@ -18,12 +18,14 @@ class IsoGen private constructor(
     private val iso: Blob,
     private val trees: List<Tree>,
     private val hdrName: String,
-    private val arkNames: List<String>
+    private var arkNames: List<String>
 ) {
     companion object {
         const val SS = 2048
         /** Memindahkan berkas di belakang ARK (alih-alih menyalin ARK) terbukti membuat GH2 layar hitam (UJI K); dimatikan. */
         const val ENABLE_TAIL = false
+        /** ARK bukan berkas terakhir: jangan salin ARK (ISO jadi ~2x, tidak terbaca emulator); buat MAIN_n.ARK baru di akhir image. */
+        const val USE_NEW_PART = true
 
         private class Rec(val recPos: Long, val lba: Long, val size: Long, val isDir: Boolean, val name: String)
 
@@ -230,6 +232,88 @@ class IsoGen private constructor(
 
     private var lastArk: SubBlob? = null
     private var hdrOverwritten = false
+    private var newPartBlob: SubBlob? = null
+
+    /** Tambah record direktori untuk ARK tambahan (ISO9660 dan Joliet) di sektor direktori yang sama dengan ARK terakhir. */
+    private fun addArkRecord(lba: Long, size: Long) {
+        val tmplName = arkNames.last()
+        val newIdx = arkNames.size
+        val rx = Regex("(\\d+)(\\.ARK)", RegexOption.IGNORE_CASE)
+        var newKey: String? = null
+        for (t in trees) {
+            val tp = t.recs[tmplName] ?: continue
+            val sec = tp / SS
+            val d = iso.read(sec * SS, SS)
+            val off = (tp - sec * SS).toInt()
+            val nl0 = d[off + 32].toInt() and 0xFF
+            val cs = if (t.joliet) Charsets.UTF_16BE else Charsets.ISO_8859_1
+            val oldS = String(d, off + 33, nl0, cs)
+            val m = rx.find(oldS) ?: throw IllegalStateException("Nama ARK '$oldS' tidak berpola angka; tidak bisa membuat ARK tambahan")
+            val newS = oldS.replaceRange(m.groups[1]!!.range, newIdx.toString())
+            val nb = newS.toByteArray(cs)
+            var recLen = 33 + nb.size
+            if (recLen % 2 == 1) recLen++
+            val rec = ByteArray(recLen)
+            System.arraycopy(d, off, rec, 0, 33)
+            rec[0] = recLen.toByte()
+            rec[32] = nb.size.toByte()
+            System.arraycopy(nb, 0, rec, 33, nb.size)
+            val lb = ByteBuffer.wrap(rec)
+            lb.order(ByteOrder.LITTLE_ENDIAN).putInt(2, lba.toInt()); lb.order(ByteOrder.BIG_ENDIAN).putInt(6, lba.toInt())
+            lb.order(ByteOrder.LITTLE_ENDIAN).putInt(10, size.toInt()); lb.order(ByteOrder.BIG_ENDIAN).putInt(14, size.toInt())
+            // cari titik sisip (urut menurut nama) dan akhir record
+            var p = 0
+            var ins = -1
+            var endRec = SS
+            while (p < SS) {
+                val l = d[p].toInt() and 0xFF
+                if (l == 0) { endRec = p; break }
+                val nl = d[p + 32].toInt() and 0xFF
+                val special = nl == 1 && (d[p + 33].toInt() == 0 || d[p + 33].toInt() == 1)
+                if (!special && ins < 0) {
+                    val nm = String(d, p + 33, nl, cs)
+                    if (nm.uppercase() > newS.uppercase()) ins = p
+                }
+                p += l
+            }
+            if (ins < 0) ins = endRec
+            if (endRec + recLen > SS) throw IllegalStateException("Sektor direktori penuh; tidak bisa menambah record ARK tambahan")
+            System.arraycopy(d, ins, d, ins + recLen, endRec - ins)
+            System.arraycopy(rec, 0, d, ins, recLen)
+            iso.write(sec * SS + ins, d.copyOfRange(ins, endRec + recLen))
+            val lo = sec * SS + ins
+            val hi = sec * SS + SS
+            for (k in t.recs.keys.toList()) {
+                val v = t.recs[k]!!
+                if (v in lo until hi) t.recs[k] = v + recLen
+            }
+            val key = newS.substringBefore(';')
+            t.recs[key] = lo
+            if (!t.joliet) newKey = key
+        }
+        arkNames = arkNames + (newKey ?: throw IllegalStateException("Record ARK tambahan gagal dibuat"))
+    }
+
+    private fun commitNewPart(hdr: ByteArray, size: Long, np: SubBlob) {
+        if (size > 0) {
+            addArkRecord(np.start / SS, size)
+            np.len = size
+        }
+        var end = roundUp(maxOf(iso.length(), np.start + size))
+        val arkEnd = if (size > 0) roundUp(np.start + size) else roundUp(iso.length())
+        val (hl, hs) = recInfo(hdrName)
+        if (roundUp(hdr.size.toLong()) <= roundUp(hs)) {
+            iso.write(hl * SS, hdr)
+            setRec(hdrName, hl, hdr.size.toLong())
+        } else {
+            iso.write(arkEnd, hdr)
+            setRec(hdrName, arkEnd / SS, hdr.size.toLong())
+            end = maxOf(end, arkEnd + roundUp(hdr.size.toLong()))
+        }
+        if (iso.length() < end) iso.write(end - 1, byteArrayOf(0))
+        growVolumeSectors(end / SS)
+        newPartBlob = null
+    }
 
     /** Pandangan ARK; bagian terakhir dapat dipindah ke akhir image supaya bisa diperbesar. */
     fun arkParts(progress: (String) -> Unit, allowRelocate: Boolean = true, forceRelocate: Boolean = false): List<Blob> {
@@ -253,6 +337,16 @@ class IsoGen private constructor(
                 out.add(sb)
             } else {
                 if (!allowRelocate) { out.add(SubBlob(iso, lba * SS, size)); continue }
+                if (USE_NEW_PART && !forceRelocate) {
+                    out.add(SubBlob(iso, lba * SS, size))
+                    progress("ARK bukan berkas terakhir; data baru ditaruh di ARK tambahan di akhir image (ISO hanya bertambah sebesar lagu).")
+                    val ns = roundUp(iso.length())
+                    val nb = SubBlob(iso, ns, 0)
+                    newPartBlob = nb
+                    lastArk = nb
+                    out.add(nb)
+                    continue
+                }
                 val tl = if (forceRelocate || !ENABLE_TAIL) null else planTail(lba, size, progress)
                 if (tl != null) {
                     tail = tl
@@ -289,6 +383,7 @@ class IsoGen private constructor(
 
     /** Tulis HDR baru, perbarui ukuran ARK dan ukuran volume. */
     fun commit(hdr: ByteArray, lastArkSize: Long) {
+        newPartBlob?.let { commitNewPart(hdr, lastArkSize, it); return }
         val name = arkNames.last()
         val ark = lastArk ?: throw IllegalStateException("arkParts() belum dipanggil")
         val (lba, _) = recInfo(name)
